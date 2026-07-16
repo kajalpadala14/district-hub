@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /auth
+Disallow: /dashboard
+Disallow: /tasks
+Disallow: /planner
+Disallow: /analytics
+Disallow: /employees
