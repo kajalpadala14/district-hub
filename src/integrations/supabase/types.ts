@@ -14,6 +14,27 @@ export type Database = {
   }
   public: {
     Tables: {
+      departments: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           address: string | null
@@ -56,12 +77,20 @@ export type Database = {
       tasks: {
         Row: {
           assignee_id: string | null
+          calendar_event_html_link: string | null
+          calendar_last_synced_at: string | null
+          calendar_retry_count: number
+          calendar_sync_enabled: boolean
+          calendar_sync_error: string | null
+          calendar_sync_status: Database["public"]["Enums"]["calendar_sync_status"]
           completed_at: string | null
           created_at: string
           created_by: string
           department: string | null
           description: string | null
           due_date: string | null
+          due_time: string | null
+          google_calendar_event_id: string | null
           id: string
           priority: Database["public"]["Enums"]["task_priority"]
           scheduled_date: string | null
@@ -71,12 +100,20 @@ export type Database = {
         }
         Insert: {
           assignee_id?: string | null
+          calendar_event_html_link?: string | null
+          calendar_last_synced_at?: string | null
+          calendar_retry_count?: number
+          calendar_sync_enabled?: boolean
+          calendar_sync_error?: string | null
+          calendar_sync_status?: Database["public"]["Enums"]["calendar_sync_status"]
           completed_at?: string | null
           created_at?: string
           created_by: string
           department?: string | null
           description?: string | null
           due_date?: string | null
+          due_time?: string | null
+          google_calendar_event_id?: string | null
           id?: string
           priority?: Database["public"]["Enums"]["task_priority"]
           scheduled_date?: string | null
@@ -86,12 +123,20 @@ export type Database = {
         }
         Update: {
           assignee_id?: string | null
+          calendar_event_html_link?: string | null
+          calendar_last_synced_at?: string | null
+          calendar_retry_count?: number
+          calendar_sync_enabled?: boolean
+          calendar_sync_error?: string | null
+          calendar_sync_status?: Database["public"]["Enums"]["calendar_sync_status"]
           completed_at?: string | null
           created_at?: string
           created_by?: string
           department?: string | null
           description?: string | null
           due_date?: string | null
+          due_time?: string | null
+          google_calendar_event_id?: string | null
           id?: string
           priority?: Database["public"]["Enums"]["task_priority"]
           scheduled_date?: string | null
@@ -122,9 +167,45 @@ export type Database = {
         }
         Relationships: []
       }
+      task_audit_logs: {
+        Row: {
+          action: Database["public"]["Enums"]["task_audit_action"]
+          actor_id: string | null
+          created_at: string
+          id: string
+          metadata: Json
+          task_id: string | null
+        }
+        Insert: {
+          action: Database["public"]["Enums"]["task_audit_action"]
+          actor_id?: string | null
+          created_at?: string
+          id?: string
+          metadata?: Json
+          task_id?: string | null
+        }
+        Update: {
+          action?: Database["public"]["Enums"]["task_audit_action"]
+          actor_id?: string | null
+          created_at?: string
+          id?: string
+          metadata?: Json
+          task_id?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
-      [_ in never]: never
+      google_calendar_connection_status: {
+        Row: {
+          connected_at: string | null
+          expires_at: string | null
+          google_email: string | null
+          updated_at: string | null
+          user_id: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       get_my_highest_role: {
@@ -141,6 +222,13 @@ export type Database = {
     }
     Enums: {
       app_role: "admin" | "manager" | "employee"
+      calendar_sync_status: "not_synced" | "pending" | "synced" | "failed"
+      task_audit_action:
+        | "task_created"
+        | "task_updated"
+        | "task_deleted"
+        | "calendar_synced"
+        | "calendar_sync_failed"
       task_priority: "low" | "medium" | "high" | "urgent"
       task_status: "todo" | "in_progress" | "blocked" | "done"
     }
@@ -271,6 +359,14 @@ export const Constants = {
   public: {
     Enums: {
       app_role: ["admin", "manager", "employee"],
+      calendar_sync_status: ["not_synced", "pending", "synced", "failed"],
+      task_audit_action: [
+        "task_created",
+        "task_updated",
+        "task_deleted",
+        "calendar_synced",
+        "calendar_sync_failed",
+      ],
       task_priority: ["low", "medium", "high", "urgent"],
       task_status: ["todo", "in_progress", "blocked", "done"],
     },
