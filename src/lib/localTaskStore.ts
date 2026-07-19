@@ -48,9 +48,9 @@ export function listLocalTasks() {
 }
 
 export function listLocalProfiles() {
-  const saved = readProfiles();
+  const saved = readProfiles().filter((profile) => !isBuiltInLocalProfile(profile));
   const byId = new Map<string, Profile>();
-  for (const profile of [...localProfiles, ...saved]) byId.set(profile.id, profile);
+  for (const profile of saved) byId.set(profile.id, profile);
   return Array.from(byId.values()).sort((a, b) => (a.full_name || a.email).localeCompare(b.full_name || b.email));
 }
 
@@ -268,4 +268,8 @@ function localDepartmentId(name: string) {
 
 function normalizeDepartmentName(name: string) {
   return name.trim().toLowerCase();
+}
+
+function isBuiltInLocalProfile(profile: Profile) {
+  return profile.id === LOCAL_USER_ID || profile.email.toLowerCase() === "local.user@gov.local";
 }
