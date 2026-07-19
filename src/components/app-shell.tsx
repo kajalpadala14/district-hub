@@ -173,9 +173,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const current = nav.find((n) => pathname === n.url || pathname.startsWith(n.url + "/"));
   return (
     <SidebarProvider>
-      <div className="flex min-h-dvh w-full bg-background">
+      <div className="flex min-h-dvh w-full overflow-x-hidden bg-background">
         <AppSidebar />
-        <div className="flex-1 flex flex-col min-w-0">
+        <div className="flex min-w-0 flex-1 flex-col">
           <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur">
             <SidebarTrigger aria-label="Toggle navigation" />
             <div className="flex items-center gap-2">
@@ -184,7 +184,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               </h1>
             </div>
           </header>
-          <main className="flex-1 p-4 md:p-6 lg:p-8">{children}</main>
+          <main className="min-w-0 max-w-full flex-1 overflow-x-hidden p-4 md:p-6 lg:p-8">{children}</main>
         </div>
         <Toaster richColors position="top-right" />
       </div>

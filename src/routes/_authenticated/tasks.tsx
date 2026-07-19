@@ -330,8 +330,8 @@ function TasksManagementPage() {
   };
 
   return (
-    <div className="space-y-6">
-      <section className="flex flex-col gap-4 rounded-lg border bg-card p-5 shadow-card lg:flex-row lg:items-center lg:justify-between">
+    <div className="mx-auto w-full max-w-[1600px] min-w-0 space-y-5">
+      <section className="flex min-w-0 flex-col gap-4 rounded-lg border bg-card p-4 shadow-card lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <h2 className="text-2xl font-semibold tracking-tight">Tasks</h2>
           <p className="mt-1 text-sm text-muted-foreground">Manage and track all assigned tasks</p>
@@ -352,14 +352,14 @@ function TasksManagementPage() {
         </div>
       </section>
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <section className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
         {kpis.map((item) => (
           <KpiCard key={item.label} {...item} />
         ))}
       </section>
 
-      <Card className="shadow-card">
-        <CardContent className="space-y-4 p-4">
+      <Card className="min-w-0 shadow-card">
+        <CardContent className="min-w-0 space-y-4 p-4">
           <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
             <QuickFilterButton active={quickFilter === "all"} onClick={() => setQuickFilter("all")}>
               All Tasks
@@ -372,8 +372,8 @@ function TasksManagementPage() {
             </QuickFilterButton>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(260px,1.4fr)_repeat(5,minmax(150px,1fr))]">
-            <div className="relative">
+          <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[minmax(240px,1.25fr)_repeat(5,minmax(130px,1fr))]">
+            <div className="relative min-w-0">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
               <Input
                 aria-label="Search tasks"
@@ -416,7 +416,7 @@ function TasksManagementPage() {
         </CardContent>
       </Card>
 
-      <Card className="overflow-hidden shadow-card">
+      <Card className="min-w-0 overflow-hidden shadow-card">
         <CardContent className="p-0">
           <div className="border-b bg-primary-muted/40 px-4 py-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -434,9 +434,9 @@ function TasksManagementPage() {
             </div>
           </div>
 
-          <div className="grid gap-3 p-3 sm:grid-cols-2 xl:hidden">
+          <div className="grid gap-3 p-3 md:grid-cols-2 2xl:hidden">
             {filtered.length === 0 && (
-              <div className="rounded-md border border-dashed py-12 text-center text-sm text-muted-foreground sm:col-span-2">
+              <div className="rounded-md border border-dashed py-12 text-center text-sm text-muted-foreground md:col-span-2">
                 No tasks found for the selected filters.
               </div>
             )}
@@ -457,21 +457,21 @@ function TasksManagementPage() {
             ))}
           </div>
 
-          <div className="hidden overflow-x-auto xl:block">
-            <Table className="min-w-[1260px]">
+          <div className="hidden max-w-full overflow-x-auto 2xl:block">
+            <Table className="min-w-[1320px]">
               <TableHeader className="bg-muted/45">
                 <TableRow>
-                  <TableHead className="w-14">S.No</TableHead>
-                  <TableHead className="w-56">Task</TableHead>
-                  <TableHead className="w-28">Due In</TableHead>
-                  <TableHead className="w-20">Image</TableHead>
-                  <TableHead className="w-72">Task Description</TableHead>
-                  <TableHead className="w-44">Comments</TableHead>
-                  <TableHead className="w-44">Assigned To</TableHead>
-                  <TableHead className="w-44">Allocated Date</TableHead>
-                  <TableHead className="w-32">Deadline</TableHead>
-                  <TableHead className="w-36">Status</TableHead>
-                  <TableHead className="w-80 text-right">Actions</TableHead>
+                  <TableHead className="w-12">S.No</TableHead>
+                  <TableHead className="w-48">Task</TableHead>
+                  <TableHead className="w-24">Due In</TableHead>
+                  <TableHead className="w-16">Image</TableHead>
+                  <TableHead className="w-64">Task Description</TableHead>
+                  <TableHead className="w-36">Comments</TableHead>
+                  <TableHead className="w-36">Assigned To</TableHead>
+                  <TableHead className="w-36">Allocated Date</TableHead>
+                  <TableHead className="w-28">Deadline</TableHead>
+                  <TableHead className="w-32">Status</TableHead>
+                  <TableHead className="w-64 text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -585,13 +585,13 @@ function KpiCard({
 }) {
   return (
     <Card className="shadow-card">
-      <CardContent className="p-5">
+      <CardContent className="p-4">
         <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
-            <p className="mt-2 text-3xl font-semibold tabular-nums">{value}</p>
+          <div className="min-w-0">
+            <p className="truncate text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+            <p className="mt-2 text-3xl font-semibold leading-none tabular-nums">{value}</p>
           </div>
-          <div className={cn("flex h-10 w-10 items-center justify-center rounded-lg", bg, tone)}>
+          <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-lg", bg, tone)}>
             <Icon className="h-5 w-5" aria-hidden="true" />
           </div>
         </div>
@@ -634,7 +634,7 @@ function FilterSelect({
 }) {
   return (
     <Select value={value} onValueChange={onValueChange}>
-      <SelectTrigger>
+      <SelectTrigger className="min-w-0">
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent>{children}</SelectContent>
