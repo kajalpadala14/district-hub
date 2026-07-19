@@ -95,7 +95,7 @@ export function useProfiles() {
         .select("*")
         .order("full_name", { ascending: true });
       if (error) throw error;
-      setProfiles(mergeProfiles(data ?? [], local));
+      setProfiles(data ?? []);
       setLoading(false);
     } catch {
       setProfiles(listLocalProfiles());

@@ -5,6 +5,7 @@ import {
   CalendarDays,
   BarChart3,
   Users,
+  UserCog,
   Shield,
   LogOut,
   Menu,
@@ -38,6 +39,7 @@ const nav = [
   { title: "Planner", url: "/planner", icon: CalendarDays },
   { title: "Analytics", url: "/analytics", icon: BarChart3 },
   { title: "Employees", url: "/employees", icon: Users },
+  { title: "Users", url: "/users", icon: UserCog },
 ] as const;
 
 function AppSidebar() {

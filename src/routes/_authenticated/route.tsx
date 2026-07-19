@@ -6,9 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { AUTH_USERNAME_DOMAIN } from "@/lib/profileClassification";
 import { cn } from "@/lib/utils";
 
-const AUTH_USERNAME_DOMAIN = "district.gov.in";
 const USERNAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,31}$/;
 
 export const Route = createFileRoute("/_authenticated")({

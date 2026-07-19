@@ -32,7 +32,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { supabase } from "@/integrations/supabase/client";
-import { useDepartments, useProfiles, useTasks, type Department, type Profile } from "@/hooks/useData";
+import { useDepartments, useProfiles, useTasks, useUserRoles, type Department, type Profile } from "@/hooks/useData";
+import { isDashboardUserProfile, usernameFromProfile } from "@/lib/profileClassification";
 import {
   createLocalDepartment,
   createLocalProfile,
@@ -49,6 +50,7 @@ export const Route = createFileRoute("/_authenticated/employees")({
 
 function EmployeesPage() {
   const { profiles, refresh } = useProfiles();
+  const roles = useUserRoles();
   const { tasks } = useTasks();
   const { departments, refresh: refreshDepartments } = useDepartments();
   const [query, setQuery] = useState("");
@@ -56,6 +58,11 @@ function EmployeesPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [departmentsOpen, setDepartmentsOpen] = useState(false);
   const [editing, setEditing] = useState<Profile | null>(null);
+  const roleByUserId = useMemo(() => new Map(roles.map((role) => [role.user_id, role.role])), [roles]);
+  const employeeProfiles = useMemo(
+    () => profiles.filter((profile) => !isDashboardUserProfile(profile, roleByUserId.get(profile.id))),
+    [profiles, roleByUserId],
+  );
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -74,7 +81,7 @@ function EmployeesPage() {
       return next;
     };
 
-    for (const profile of profiles) {
+    for (const profile of employeeProfiles) {
       if (profile.department) ensure(profile.department).employees += 1;
     }
     for (const task of tasks) {
@@ -84,11 +91,11 @@ function EmployeesPage() {
       if (task.scheduled_date || task.due_date) usage.planner += 1;
     }
     return counts;
-  }, [profiles, tasks]);
+  }, [employeeProfiles, tasks]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return profiles
+    return employeeProfiles
       .filter((profile) => {
         if (departmentFilter !== "all" && profile.department !== departmentFilter) return false;
         if (!q) return true;
@@ -101,7 +108,7 @@ function EmployeesPage() {
         ].some((value) => value.toLowerCase().includes(q));
       })
       .sort((a, b) => (a.full_name || a.email).localeCompare(b.full_name || b.email));
-  }, [profiles, query, departmentFilter]);
+  }, [employeeProfiles, query, departmentFilter]);
 
   const openAdd = () => {
     setEditing(null);
@@ -669,7 +676,7 @@ function EmployeeDialog({
 }
 
 function displayUsername(profile: Profile) {
-  return profile.email.split("@")[0] || "--";
+  return usernameFromProfile(profile);
 }
 
 function isLocalProfile(profile: Profile) {
