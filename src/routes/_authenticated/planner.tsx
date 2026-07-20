@@ -103,14 +103,17 @@ function PlannerPage() {
   const [focusedImportToken, setFocusedImportToken] = useState("");
 
   const days = useMemo(() => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)), [weekStart]);
-  const slots = useMemo(() => buildPlannerSlots(plannerSettings), [plannerSettings]);
-  const icsHttpsUrl = useMemo(() => buildPlannerIcsUrl(plannerSettings.token, "https"), [plannerSettings.token]);
-  const icsWebcalUrl = useMemo(() => buildPlannerIcsUrl(plannerSettings.token, "webcal"), [plannerSettings.token]);
-  const subscriptionUrlWarning = useMemo(() => plannerSubscriptionWarning(icsHttpsUrl), [icsHttpsUrl]);
   const meetings = useMemo(
     () => [...tasks, ...importedIcsTasks].filter(isPlannerMeetingTask),
     [tasks, importedIcsTasks],
   );
+  const slots = useMemo(
+    () => buildPlannerSlots(plannerSettings, meetings, days),
+    [plannerSettings, meetings, days],
+  );
+  const icsHttpsUrl = useMemo(() => buildPlannerIcsUrl(plannerSettings.token, "https"), [plannerSettings.token]);
+  const icsWebcalUrl = useMemo(() => buildPlannerIcsUrl(plannerSettings.token, "webcal"), [plannerSettings.token]);
+  const subscriptionUrlWarning = useMemo(() => plannerSubscriptionWarning(icsHttpsUrl), [icsHttpsUrl]);
 
   const loadImportedEvents = useCallback(async (token: string) => {
     if (!token) {
@@ -950,12 +953,24 @@ function createPlannerToken() {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function buildPlannerSlots(settings: PlannerSettings): PlannerSlot[] {
+function buildPlannerSlots(settings: PlannerSettings, tasks: Task[] = [], days: Date[] = []): PlannerSlot[] {
   const slots: PlannerSlot[] = [];
   const slotMin = Math.max(5, Number(settings.slotMin) || 30);
   const gapMin = Math.max(0, Number(settings.gapMin) || 0);
-  let cursor = minutesFromTime(settings.dayStart);
-  const end = minutesFromTime(settings.dayEnd);
+  const dayKeys = new Set(days.map((day) => format(day, "yyyy-MM-dd")));
+  const taskTimes = tasks
+    .filter((task) => {
+      const date = dateKeyForTask(task);
+      return !dayKeys.size || (date ? dayKeys.has(date) : false);
+    })
+    .map((task) => normalizeTaskTimeMinutes(task.due_time))
+    .filter((time): time is number => time !== null);
+  const configuredStart = minutesFromTime(settings.dayStart);
+  const configuredEnd = minutesFromTime(settings.dayEnd);
+  const earliestTask = taskTimes.length ? Math.min(...taskTimes) : configuredStart;
+  const latestTask = taskTimes.length ? Math.max(...taskTimes) + slotMin : configuredEnd;
+  let cursor = Math.max(0, Math.min(configuredStart, roundDownMinutes(earliestTask, slotMin)));
+  const end = Math.min(24 * 60, Math.max(configuredEnd, roundUpMinutes(latestTask, slotMin)));
   const lunchStart = minutesFromTime(settings.lunchStart);
   const lunchEnd = minutesFromTime(settings.lunchEnd);
 
@@ -1071,6 +1086,14 @@ function normalizeTaskTimeMinutes(value: string | null | undefined) {
   return minutesFromTime(normalized);
 }
 
+function roundDownMinutes(value: number, step: number) {
+  return Math.floor(value / step) * step;
+}
+
+function roundUpMinutes(value: number, step: number) {
+  return Math.ceil(value / step) * step;
+}
+
 function focusPlannerWeekOnImportedTasks(tasks: Task[], setWeekStart: (date: Date) => void) {
   const dates = tasks
     .map(dateKeyForTask)
@@ -1079,7 +1102,7 @@ function focusPlannerWeekOnImportedTasks(tasks: Task[], setWeekStart: (date: Dat
   if (!dates.length) return;
 
   const today = format(new Date(), "yyyy-MM-dd");
-  const targetDate = dates.find((date) => date >= today) ?? dates[0];
+  const targetDate = dates.find((date) => date >= today) ?? dates[dates.length - 1];
   setWeekStart(startOfWeek(parseISO(targetDate), { weekStartsOn: 1 }));
 }
 
