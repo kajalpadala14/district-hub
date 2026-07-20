@@ -129,31 +129,80 @@ type PlannerIcsTask = {
   updated_at: string | null;
   created_at: string | null;
   status: string | null;
+  [key: string]: string | null;
 };
+
+const plannerDateFields = [
+  "scheduled_date",
+  "due_date",
+  "meeting_date",
+  "start_date",
+  "event_date",
+] as const;
+const plannerTaskSelect =
+  "id,title,description,department,scheduled_date,due_date,due_time,updated_at,created_at,status";
 
 async function fetchPlannerTasksForCalendar(userId: string): Promise<PlannerIcsTask[]> {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const canViewAllPlannerTasks = await userCanViewAllTasks(userId);
+  const rows = await fetchPlannerTaskRows(userId, canViewAllPlannerTasks);
+  return rows.filter((task) => getPlannerTaskDate(task)).sort(comparePlannerTasks);
+}
+
+async function fetchPlannerTaskRows(
+  userId: string,
+  canViewAllPlannerTasks: boolean,
+): Promise<PlannerIcsTask[]> {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   let query = supabaseAdmin
     .from("tasks")
-    .select(
-      "id,title,description,department,scheduled_date,due_date,due_time,updated_at,created_at,status",
-    )
-    .or("scheduled_date.not.is.null,due_date.not.is.null")
-    .ilike("description", "%type: meeting%")
+    .select(plannerTaskSelect)
     .order("scheduled_date", { ascending: true, nullsFirst: false })
-    .order("due_date", { ascending: true, nullsFirst: false })
-    .order("due_time", { ascending: true, nullsFirst: false });
+    .order("due_date", { ascending: true, nullsFirst: false });
 
   if (!canViewAllPlannerTasks) {
-    query = query.or(
-      `created_by.eq.${userId},assigned_to.eq.${userId},assignee_id.eq.${userId},backend_assigned_to.eq.${userId}`,
-    );
+    query = query.eq("created_by", userId);
   }
 
   const { data, error } = await query;
   if (error) throw error;
-  return data ?? [];
+  return addDetectedPlannerDateFields(data ?? []);
+}
+
+async function addDetectedPlannerDateFields(rows: PlannerIcsTask[]): Promise<PlannerIcsTask[]> {
+  if (!rows.length) return rows;
+
+  const detectedFields = await detectExtraPlannerDateFields();
+  if (!detectedFields.length) return rows;
+
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const { data, error } = await supabaseAdmin
+    .from("tasks")
+    .select(["id", ...detectedFields].join(","))
+    .in(
+      "id",
+      rows.map((row) => row.id),
+    );
+
+  if (error) return rows;
+
+  const extraDatesById = new Map((data ?? []).map((row) => [row.id, row]));
+  return rows.map((row) => ({ ...row, ...(extraDatesById.get(row.id) ?? {}) }));
+}
+
+async function detectExtraPlannerDateFields() {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const extraFields = plannerDateFields.filter(
+    (field) => !["scheduled_date", "due_date"].includes(field),
+  );
+  const detectedFields: string[] = [];
+
+  for (const field of extraFields) {
+    const { error } = await supabaseAdmin.from("tasks").select(`id,${field}`).limit(1);
+    if (!error) detectedFields.push(field);
+  }
+
+  return detectedFields;
 }
 
 async function userCanViewAllTasks(userId: string) {
@@ -170,26 +219,30 @@ async function userCanViewAllTasks(userId: string) {
 async function explainEmptyPlannerCalendar(userId: string) {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const canViewAllPlannerTasks = await userCanViewAllTasks(userId);
-  let datedQuery = supabaseAdmin
+  const rows = await fetchPlannerTaskRows(userId, canViewAllPlannerTasks);
+  const datedCount = rows.filter((task) => getPlannerTaskDate(task)).length;
+  const undatedRows = rows.filter((task) => !getPlannerTaskDate(task));
+  let allDatedQuery = supabaseAdmin
     .from("tasks")
     .select("id", { count: "exact", head: true })
     .or("scheduled_date.not.is.null,due_date.not.is.null");
 
   if (!canViewAllPlannerTasks) {
-    datedQuery = datedQuery.or(
-      `created_by.eq.${userId},assigned_to.eq.${userId},assignee_id.eq.${userId},backend_assigned_to.eq.${userId}`,
-    );
+    allDatedQuery = allDatedQuery.eq("created_by", userId);
   }
 
-  const { count: datedCount, error: datedError } = await datedQuery;
+  const { count: coreDatedCount, error: datedError } = await allDatedQuery;
   if (datedError) throw datedError;
 
   return [
     "No planner calendar events were exported.",
-    `Reason: the subscription token is valid, but the database query found no dated tasks marked as planner meetings for this user's calendar scope.`,
+    "Reason: the subscription token is valid, but no tasks in this planner scope have a usable planner date.",
+    "Planner table: public.tasks. Token table: public.planner_settings.",
     `Calendar scope: ${canViewAllPlannerTasks ? "admin/manager, all planner tasks" : "tasks created by or assigned to the token owner"}.`,
-    `Dated tasks in scope before the planner-meeting filter: ${datedCount ?? 0}.`,
-    `Planner filter: tasks.description must contain "Type: Meeting" and scheduled_date or due_date must be set.`,
+    `Tasks in scope: ${rows.length}.`,
+    `Tasks with scheduled_date or due_date in scope: ${coreDatedCount ?? 0}.`,
+    `Tasks with any detected planner date (${plannerDateFields.join(", ")}): ${datedCount}.`,
+    ...formatUndatedPlannerRows(undatedRows),
   ].join("\n");
 }
 
@@ -210,7 +263,7 @@ function buildPlannerIcsContent(tasks: PlannerIcsTask[]) {
 }
 
 function buildPlannerIcsEvent(task: PlannerIcsTask) {
-  const date = task.scheduled_date ?? task.due_date ?? toDateKey(new Date());
+  const date = getPlannerTaskDate(task) ?? toDateKey(new Date());
   const time = normalizeTime(task.due_time);
   const durationMinutes = extractDurationMinutes(task.description) ?? 30;
   const updated = task.updated_at || task.created_at || new Date().toISOString();
@@ -230,6 +283,39 @@ function buildPlannerIcsEvent(task: PlannerIcsTask) {
 
   lines.splice(4, 0, ...buildEventDateLines(date, time, durationMinutes));
   return lines;
+}
+
+function getPlannerTaskDate(task: PlannerIcsTask) {
+  for (const field of plannerDateFields) {
+    const value = normalizeDateKey(task[field]);
+    if (value) return value;
+  }
+  return null;
+}
+
+function normalizeDateKey(value: string | null | undefined) {
+  if (!value) return null;
+  const date = value.trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  return date;
+}
+
+function comparePlannerTasks(a: PlannerIcsTask, b: PlannerIcsTask) {
+  const dateCompare = String(getPlannerTaskDate(a)).localeCompare(String(getPlannerTaskDate(b)));
+  if (dateCompare) return dateCompare;
+  return String(normalizeTime(a.due_time) ?? "").localeCompare(
+    String(normalizeTime(b.due_time) ?? ""),
+  );
+}
+
+function formatUndatedPlannerRows(rows: PlannerIcsTask[]) {
+  if (!rows.length) return ["No undated task records were found in scope."];
+  const sample = rows.slice(0, 10).map((row) => `- ${row.id}: ${row.title || "Untitled task"}`);
+  return [
+    "Task records missing planner dates:",
+    ...sample,
+    rows.length > sample.length ? `- ...and ${rows.length - sample.length} more.` : "",
+  ].filter(Boolean);
 }
 
 function buildEventDateLines(date: string, time: string | null, durationMinutes: number) {
