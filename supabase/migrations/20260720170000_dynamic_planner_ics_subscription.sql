@@ -24,7 +24,7 @@ LANGUAGE plpgsql
 SET search_path = public
 AS $$
 BEGIN
-  NEW.ics_token := COALESCE(NULLIF(NEW.ics_token, ''), NULLIF(NEW.subscription_token, ''), encode(gen_random_bytes(18), 'hex'));
+  NEW.ics_token := COALESCE(NULLIF(NEW.ics_token, ''), NULLIF(NEW.subscription_token, ''), encode(extensions.gen_random_bytes(18), 'hex'));
   NEW.subscription_token := COALESCE(NULLIF(NEW.subscription_token, ''), NEW.ics_token);
 
   IF TG_OP = 'INSERT' THEN
