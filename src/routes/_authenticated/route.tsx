@@ -45,12 +45,19 @@ export function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const todayLabel = new Intl.DateTimeFormat("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-  }).format(new Date());
+  const [todayLabel, setTodayLabel] = useState("");
+  const [currentYear, setCurrentYear] = useState("");
+
+  useEffect(() => {
+    const today = new Date();
+    setTodayLabel(new Intl.DateTimeFormat("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }).format(today));
+    setCurrentYear(String(today.getFullYear()));
+  }, []);
 
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
@@ -128,9 +135,9 @@ export function LoginScreen() {
           </p>
           <div className="mt-14 inline-flex items-center gap-4 rounded-full border border-white/20 bg-white/12 px-9 py-4 text-lg font-bold shadow-xl backdrop-blur">
             <CalendarDays className="h-6 w-6 text-violet-100" />
-            {todayLabel}
+            {todayLabel || "Loading date"}
           </div>
-          <p className="mt-14 text-sm font-medium text-white/50">© {new Date().getFullYear()} District Administration</p>
+          <p className="mt-14 text-sm font-medium text-white/50">© {currentYear || "2026"} District Administration</p>
         </div>
       </section>
 

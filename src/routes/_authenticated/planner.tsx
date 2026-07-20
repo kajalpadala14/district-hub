@@ -38,7 +38,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useDepartments, useProfiles, useTasks, type Task } from "@/hooks/useData";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
-import { requestGoogleCalendarConnection, syncTaskCalendar } from "@/lib/googleCalendar";
+import { syncTaskCalendar } from "@/lib/googleCalendar";
 import { dateKeyForTask, isPlannerMeetingTask, PLANNER_MEETING_TYPE_LINE } from "@/lib/taskClassification";
 
 export const Route = createFileRoute("/_authenticated/planner")({
@@ -262,7 +262,7 @@ function PlannerPage() {
           </Button>
           <Button variant="outline" size="sm" className="bg-info/10 text-info hover:bg-info/15 hover:text-info" onClick={exportIcs}>
             <Link2 className="h-4 w-4" />
-            Sync ICS
+            Download ICS
           </Button>
           <Button variant="outline" size="sm" className="bg-success/10 text-success hover:bg-success/15 hover:text-success" onClick={copyDayMessage}>
             <MessageCircle className="h-4 w-4" />
@@ -599,14 +599,6 @@ function EventDialog({
     }
   };
 
-  const connectGoogle = async () => {
-    try {
-      await requestGoogleCalendarConnection();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Google Calendar connection failed");
-    }
-  };
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="overflow-hidden border-0 bg-muted p-0 shadow-2xl sm:max-w-md">
@@ -728,15 +720,7 @@ function EventDialog({
             </span>
           </label>
 
-          <DialogFooter className="grid grid-cols-3 gap-2 sm:space-x-0">
-            <Button
-              type="button"
-              className="bg-success text-success-foreground hover:bg-success/90"
-              title="Connect Google Calendar"
-              onClick={connectGoogle}
-            >
-              Google
-            </Button>
+          <DialogFooter className="grid grid-cols-2 gap-2 sm:space-x-0">
             <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>

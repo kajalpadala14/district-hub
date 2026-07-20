@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -11,7 +11,7 @@ import {
   Clock3,
   RefreshCw,
 } from "lucide-react";
-import { addDays, endOfWeek, format, isPast, isToday, isWithinInterval, parseISO, startOfWeek } from "date-fns";
+import { addDays, endOfWeek, format, isWithinInterval, parseISO, startOfWeek } from "date-fns";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -40,17 +40,22 @@ function GovernanceOverviewPage() {
   ]);
   const [meetingSort, setMeetingSort] = useState<MeetingSortMode>("next");
   const [meetingsCollapsed, setMeetingsCollapsed] = useState(true);
+  const [now, setNow] = useState<Date | null>(null);
 
-  const todayKey = format(new Date(), "yyyy-MM-dd");
-  const tomorrowKey = format(addDays(new Date(), 1), "yyyy-MM-dd");
-  const weekStart = startOfWeek(new Date(), { weekStartsOn: 1 });
-  const weekEnd = endOfWeek(new Date(), { weekStartsOn: 1 });
+  useEffect(() => {
+    setNow(new Date());
+  }, []);
+
+  const todayKey = now ? format(now, "yyyy-MM-dd") : "";
+  const tomorrowKey = now ? format(addDays(now, 1), "yyyy-MM-dd") : "";
+  const weekStart = useMemo(() => startOfWeek(now ?? new Date(0), { weekStartsOn: 1 }), [now]);
+  const weekEnd = useMemo(() => endOfWeek(now ?? new Date(0), { weekStartsOn: 1 }), [now]);
 
   const taskItems = tasks.filter(isTaskItem);
   const totalTasks = taskItems.length;
   const completedTasks = taskItems.filter((task) => task.status === "done").length;
-  const overdueTasks = taskItems.filter(overdueTask).length;
-  const pendingTasks = taskItems.filter((task) => task.status !== "done" && !overdueTask(task)).length;
+  const overdueTasks = taskItems.filter((task) => overdueTask(task, todayKey)).length;
+  const pendingTasks = taskItems.filter((task) => task.status !== "done" && !overdueTask(task, todayKey)).length;
 
   const scheduledTasks = taskItems.filter((task) => task.scheduled_date || task.due_date);
   const plannerMeetingTasks = tasks.filter(isPlannerMeetingTask);
@@ -67,7 +72,10 @@ function GovernanceOverviewPage() {
     .sort((a, b) => Date.parse(dateKeyForTask(a) ?? "") - Date.parse(dateKeyForTask(b) ?? ""))
     .slice(0, 8);
 
-  const departmentSummaries = sortDepartmentSummaries(buildDepartmentSummaries(plannerMeetingTasks), meetingSort);
+  const todayTime = todayKey ? Date.parse(todayKey) : 0;
+  const departmentSummaries = todayKey
+    ? sortDepartmentSummaries(buildDepartmentSummaries(plannerMeetingTasks), meetingSort, todayTime)
+    : [];
 
   const kpis = [
     { label: "Total Tasks", value: totalTasks, icon: ClipboardList, tone: "text-primary", bar: "bg-primary/20" },
@@ -86,7 +94,7 @@ function GovernanceOverviewPage() {
         <div>
           <h2 className="text-3xl font-semibold tracking-tight">Overview</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            {format(new Date(), "EEEE, d MMMM yyyy")} - live task and department summary
+            {now ? format(now, "EEEE, d MMMM yyyy") : "Loading date"} - live task and department summary
           </p>
         </div>
         <Button variant="ghost" size="icon" aria-label="Refresh overview" onClick={() => void refreshOverview()}>
@@ -202,7 +210,7 @@ function GovernanceOverviewPage() {
                   </p>
                 ) : (
                   weekTimeline.map((task) => (
-                    <TimelineItem key={task.id} task={task} />
+                    <TimelineItem key={task.id} task={task} todayKey={todayKey} />
                   ))
                 )}
               </div>
@@ -269,7 +277,7 @@ function buildDepartmentSummaries(tasks: Task[]): DepartmentSummary[] {
     .filter((department) => department.total > 0);
 }
 
-function sortDepartmentSummaries(items: DepartmentSummary[], mode: MeetingSortMode) {
+function sortDepartmentSummaries(items: DepartmentSummary[], mode: MeetingSortMode, todayTime: number) {
   const sorted = [...items];
   if (mode === "department") {
     return sorted.sort((a, b) => a.name.localeCompare(b.name));
@@ -277,11 +285,10 @@ function sortDepartmentSummaries(items: DepartmentSummary[], mode: MeetingSortMo
   if (mode === "latest") {
     return sorted.sort((a, b) => latestMeetingTime(b) - latestMeetingTime(a));
   }
-  return sorted.sort((a, b) => nextMeetingTime(a) - nextMeetingTime(b));
+  return sorted.sort((a, b) => nextMeetingTime(a, todayTime) - nextMeetingTime(b, todayTime));
 }
 
-function nextMeetingTime(department: DepartmentSummary) {
-  const today = Date.parse(format(new Date(), "yyyy-MM-dd"));
+function nextMeetingTime(department: DepartmentSummary, today: number) {
   const upcoming = department.recentTasks
     .map((task) => Date.parse(dateKeyForTask(task) ?? ""))
     .filter((time) => Number.isFinite(time) && time >= today);
@@ -340,7 +347,7 @@ function MeetingCell({ task }: { task: Task }) {
   );
 }
 
-function TimelineItem({ task }: { task: Task }) {
+function TimelineItem({ task, todayKey }: { task: Task; todayKey: string }) {
   const dateKey = dateKeyForTask(task);
   return (
     <div className="grid grid-cols-[minmax(104px,134px)_minmax(0,1fr)] gap-3 rounded-xl border border-primary/20 bg-primary/5 p-3 shadow-card max-[420px]:grid-cols-1">
@@ -349,8 +356,8 @@ function TimelineItem({ task }: { task: Task }) {
         <p className="mt-2 font-semibold text-primary/90">{task.due_time ? task.due_time.slice(0, 5) : "All day"}</p>
       </div>
       <div className="min-w-0 py-0.5">
-        <Badge variant="outline" className={cn("h-6 rounded-full px-3 text-[11px] font-bold uppercase", statusTone(task))}>
-          {statusLabel(task)}
+        <Badge variant="outline" className={cn("h-6 rounded-full px-3 text-[11px] font-bold uppercase", statusTone(task, todayKey))}>
+          {statusLabel(task, todayKey)}
         </Badge>
         <p className="mt-2 line-clamp-2 text-sm font-semibold leading-5">{task.title}</p>
         <p className="mt-1 text-xs font-medium text-muted-foreground">{task.department || "Task follow-up"}</p>
@@ -391,11 +398,11 @@ function QuickStat({ label, value, tone = "text-foreground" }: { label: string; 
   );
 }
 
-function overdueTask(task: { status: string; due_date: string | null }) {
+function overdueTask(task: { status: string; due_date: string | null }, todayKey: string) {
   return (
     task.status !== "done" &&
     (task.status === "blocked" ||
-      (!!task.due_date && isPast(parseISO(task.due_date)) && !isToday(parseISO(task.due_date))))
+      (!!todayKey && !!task.due_date && task.due_date < todayKey))
   );
 }
 
@@ -479,16 +486,16 @@ function departmentNameForPlannerTask(task: Task) {
   return task.department?.trim() || "Governance Department";
 }
 
-function statusLabel(task: Task) {
+function statusLabel(task: Task, todayKey: string) {
   if (task.status === "done") return "Completed";
-  if (overdueTask(task)) return "Overdue";
+  if (overdueTask(task, todayKey)) return "Overdue";
   if (task.status === "in_progress") return "In Progress";
   return "Pending";
 }
 
-function statusTone(task: Task) {
+function statusTone(task: Task, todayKey: string) {
   if (task.status === "done") return "bg-success/10 text-success border-success/30";
-  if (overdueTask(task)) return "bg-destructive/15 text-destructive border-destructive/30";
+  if (overdueTask(task, todayKey)) return "bg-destructive/15 text-destructive border-destructive/30";
   if (task.status === "in_progress") return "bg-primary/10 text-primary border-primary/30";
   return "bg-muted text-muted-foreground border-muted-foreground/20";
 }
