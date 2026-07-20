@@ -25,7 +25,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useProfiles, useTasks, type Task } from "@/hooks/useData";
+import { useTasks, type Task } from "@/hooks/useData";
+import { isTaskItem } from "@/lib/taskClassification";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/analytics")({
@@ -50,18 +51,22 @@ const healthColors = {
 };
 
 function CommandCenterPage() {
-  const { tasks } = useTasks();
-  const { profiles } = useProfiles();
+  const { tasks, loading, error, refresh } = useTasks();
 
   const nowLabel = format(new Date(), "dd/MM/yyyy, HH:mm:ss");
+  const taskItems = useMemo(() => tasks.filter(isTaskItem), [tasks]);
 
   const stats = useMemo(() => {
-    const completed = tasks.filter((task) => task.status === "done").length;
-    const inProgress = tasks.filter((task) => task.status === "in_progress").length;
-    const overdue = tasks.filter((task) => isTaskOverdue(task)).length;
-    const pending = tasks.filter((task) => task.status !== "done" && !isTaskOverdue(task)).length;
-    return { completed, inProgress, overdue, pending };
-  }, [tasks]);
+    const completed = taskItems.filter((task) => task.status === "done").length;
+    const inProgress = taskItems.filter(
+      (task) => task.status === "in_progress" && !isTaskOverdue(task),
+    ).length;
+    const overdue = taskItems.filter((task) => isTaskOverdue(task)).length;
+    const pending = taskItems.filter(
+      (task) => task.status === "todo" && !isTaskOverdue(task),
+    ).length;
+    return { completed, inProgress, overdue, pending, total: taskItems.length };
+  }, [taskItems]);
 
   const healthData = [
     { name: "Completed", value: stats.completed, color: healthColors.completed },
@@ -70,7 +75,7 @@ function CommandCenterPage() {
     { name: "In Progress", value: stats.inProgress, color: healthColors.inProgress },
   ];
 
-  const agencyRows = useMemo(() => buildAgencyRows(tasks), [tasks]);
+  const agencyRows = useMemo(() => buildAgencyRows(taskItems), [taskItems]);
   const bottlenecks = agencyRows
     .filter((row) => row.overdue > 0)
     .sort((a, b) => b.overdue - a.overdue)
@@ -80,8 +85,8 @@ function CommandCenterPage() {
     .sort((a, b) => b.pending + b.inProgress + b.overdue - (a.pending + a.inProgress + a.overdue))
     .slice(0, 10)
     .map((row) => ({ agency: row.agency, active: row.pending + row.inProgress + row.overdue }));
-  const oldestPending = tasks
-    .filter((task) => task.status !== "done")
+  const oldestPending = taskItems
+    .filter((task) => task.status !== "done" && !isTaskOverdue(task))
     .sort((a, b) => ageInDays(b) - ageInDays(a))
     .slice(0, 10);
 
@@ -90,19 +95,27 @@ function CommandCenterPage() {
       <section className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 className="text-3xl font-semibold tracking-tight">Command Center</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Task analytics and bottleneck detection</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Task analytics and bottleneck detection
+          </p>
         </div>
-        <Button className="w-fit shadow-elevated">
+        <Button className="w-fit shadow-elevated" disabled={loading} onClick={() => void refresh()}>
           <RefreshCw className="h-4 w-4" />
-          Refresh
+          {loading ? "Refreshing" : "Refresh"}
         </Button>
       </section>
+
+      {error && (
+        <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm font-semibold text-destructive">
+          {error}
+        </p>
+      )}
 
       <section className="grid gap-6 xl:grid-cols-2">
         <Card className="rounded-2xl shadow-elevated">
           <CardHeader>
             <CardTitle>Project Health</CardTitle>
-            <CardDescription>Click slices to open filtered task list</CardDescription>
+            <CardDescription>Current task status from saved records</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="h-64">
@@ -138,15 +151,31 @@ function CommandCenterPage() {
         <Card className="rounded-2xl shadow-elevated">
           <CardHeader>
             <CardTitle>Critical Bottlenecks</CardTitle>
-            <CardDescription>Click bars to open agency tasks</CardDescription>
+            <CardDescription>Current overdue tasks by agency</CardDescription>
           </CardHeader>
           <CardContent className="h-80">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={bottlenecks.length ? bottlenecks : [{ agency: "No overdue", overdue: 0 }]} layout="vertical" margin={{ left: 24, right: 24 }}>
+              <BarChart
+                data={bottlenecks.length ? bottlenecks : [{ agency: "No overdue", overdue: 0 }]}
+                layout="vertical"
+                margin={{ left: 24, right: 24 }}
+              >
                 <XAxis type="number" allowDecimals={false} tickLine={false} axisLine />
-                <YAxis type="category" dataKey="agency" width={120} tickLine={false} axisLine={false} tick={{ fontSize: 11 }} />
+                <YAxis
+                  type="category"
+                  dataKey="agency"
+                  width={120}
+                  tickLine={false}
+                  axisLine={false}
+                  tick={{ fontSize: 11 }}
+                />
                 <Tooltip />
-                <Bar dataKey="overdue" fill="oklch(0.62 0.22 25)" radius={[0, 6, 6, 0]} barSize={86} />
+                <Bar
+                  dataKey="overdue"
+                  fill="oklch(0.62 0.22 25)"
+                  radius={[0, 6, 6, 0]}
+                  barSize={86}
+                />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -157,15 +186,27 @@ function CommandCenterPage() {
         <Card className="rounded-2xl shadow-elevated">
           <CardHeader>
             <CardTitle>Highest Workload</CardTitle>
-            <CardDescription>Click bars to open active tasks</CardDescription>
+            <CardDescription>Current open workload by agency</CardDescription>
           </CardHeader>
           <CardContent className="h-80">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={workload} layout="vertical" margin={{ left: 20, right: 24 }}>
                 <XAxis type="number" allowDecimals={false} tickLine={false} axisLine />
-                <YAxis type="category" dataKey="agency" width={145} tickLine={false} axisLine={false} tick={{ fontSize: 11 }} />
+                <YAxis
+                  type="category"
+                  dataKey="agency"
+                  width={145}
+                  tickLine={false}
+                  axisLine={false}
+                  tick={{ fontSize: 11 }}
+                />
                 <Tooltip />
-                <Bar dataKey="active" fill="oklch(0.78 0.16 75)" radius={[0, 8, 8, 0]} barSize={14} />
+                <Bar
+                  dataKey="active"
+                  fill="oklch(0.78 0.16 75)"
+                  radius={[0, 8, 8, 0]}
+                  barSize={14}
+                />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -174,23 +215,28 @@ function CommandCenterPage() {
         <Card className="rounded-2xl shadow-elevated">
           <CardHeader>
             <CardTitle>Top 10 Oldest Pending Tasks</CardTitle>
-            <CardDescription>Click item to open in Tasks</CardDescription>
+            <CardDescription>Current open tasks sorted by age</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="max-h-80 space-y-3 overflow-y-auto pr-2">
               {oldestPending.length === 0 && (
-                <p className="rounded-lg border p-4 text-sm text-muted-foreground">No pending tasks.</p>
+                <p className="rounded-lg border p-4 text-sm text-muted-foreground">
+                  No pending tasks.
+                </p>
               )}
               {oldestPending.map((task, index) => (
                 <div key={task.id} className="rounded-lg border bg-background p-3 shadow-card">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="line-clamp-2 text-sm font-semibold">
-                        #{task.id.slice(0, 3).toUpperCase()}-{String(index + 1).padStart(3, "0")} · {task.title}
+                        #{task.id.slice(0, 3).toUpperCase()}-{String(index + 1).padStart(3, "0")} ·{" "}
+                        {task.title}
                       </p>
                       <p className="mt-1 text-xs text-muted-foreground">{agencyFor(task)}</p>
                     </div>
-                    <span className="shrink-0 text-sm font-semibold text-destructive">{ageInDays(task)} days</span>
+                    <span className="shrink-0 text-sm font-semibold text-destructive">
+                      {ageInDays(task)} days
+                    </span>
                   </div>
                 </div>
               ))}
@@ -203,11 +249,11 @@ function CommandCenterPage() {
         <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
           <div>
             <CardTitle>Detailed Agency Performance</CardTitle>
-            <CardDescription>Click rows to open agency task list</CardDescription>
+            <CardDescription>Current task rows only, excluding planner meetings</CardDescription>
           </div>
           <Badge variant="outline" className="gap-1.5 text-muted-foreground">
             <Download className="h-3.5 w-3.5" />
-            Updated {nowLabel}
+            {stats.total} tasks | Updated {nowLabel}
           </Badge>
         </CardHeader>
         <CardContent>
@@ -225,15 +271,32 @@ function CommandCenterPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
+                {agencyRows.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                      No current tasks found.
+                    </TableCell>
+                  </TableRow>
+                )}
                 {agencyRows.map((row, index) => (
                   <TableRow key={row.agency} className={cn(index % 7 === 6 && "bg-primary/5")}>
                     <TableCell className="font-semibold">{row.agency}</TableCell>
                     <TableCell className="text-center tabular-nums">{row.total}</TableCell>
-                    <TableCell className="text-center font-semibold tabular-nums text-success">{row.completed}</TableCell>
-                    <TableCell className="text-center font-semibold tabular-nums text-warning-foreground">{row.pending}</TableCell>
-                    <TableCell className="text-center font-semibold tabular-nums text-primary">{row.inProgress}</TableCell>
-                    <TableCell className="text-center font-semibold tabular-nums text-destructive">{row.overdue}</TableCell>
-                    <TableCell className="text-center text-sm text-muted-foreground">{row.avgSpeed}</TableCell>
+                    <TableCell className="text-center font-semibold tabular-nums text-success">
+                      {row.completed}
+                    </TableCell>
+                    <TableCell className="text-center font-semibold tabular-nums text-warning-foreground">
+                      {row.pending}
+                    </TableCell>
+                    <TableCell className="text-center font-semibold tabular-nums text-primary">
+                      {row.inProgress}
+                    </TableCell>
+                    <TableCell className="text-center font-semibold tabular-nums text-destructive">
+                      {row.overdue}
+                    </TableCell>
+                    <TableCell className="text-center text-sm text-muted-foreground">
+                      {row.avgSpeed}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -243,9 +306,27 @@ function CommandCenterPage() {
       </Card>
 
       <section className="grid gap-4 md:grid-cols-3">
-        <SummaryCard icon={CheckCircle2} label="Completed" value={stats.completed} tone="text-success" bg="bg-success/10" />
-        <SummaryCard icon={TimerReset} label="Overdue" value={stats.overdue} tone="text-destructive" bg="bg-destructive/10" />
-        <SummaryCard icon={Clock3} label="Open Workload" value={stats.pending + stats.inProgress} tone="text-warning-foreground" bg="bg-warning/20" />
+        <SummaryCard
+          icon={CheckCircle2}
+          label="Completed"
+          value={stats.completed}
+          tone="text-success"
+          bg="bg-success/10"
+        />
+        <SummaryCard
+          icon={TimerReset}
+          label="Overdue"
+          value={stats.overdue}
+          tone="text-destructive"
+          bg="bg-destructive/10"
+        />
+        <SummaryCard
+          icon={Clock3}
+          label="Open Workload"
+          value={stats.pending + stats.inProgress}
+          tone="text-warning-foreground"
+          bg="bg-warning/20"
+        />
       </section>
     </div>
   );
@@ -255,7 +336,9 @@ function LegendPill({ color, label, value }: { color: string; label: string; val
   return (
     <div className="grid min-h-14 min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-lg border bg-background px-3 py-2 text-xs">
       <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full", color)} />
-      <span className="min-w-0 whitespace-normal break-words leading-snug text-muted-foreground">{label}:</span>
+      <span className="min-w-0 whitespace-normal break-words leading-snug text-muted-foreground">
+        {label}:
+      </span>
       <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">{value}</span>
     </div>
   );
@@ -281,7 +364,9 @@ function SummaryCard({
           <Icon className="h-5 w-5" />
         </div>
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {label}
+          </p>
           <p className="text-2xl font-semibold tabular-nums">{value}</p>
         </div>
       </CardContent>
@@ -301,7 +386,12 @@ function buildAgencyRows(tasks: Task[]): AgencyRow[] {
       const completedTasks = items.filter((task) => task.status === "done");
       const completedSpeeds = completedTasks
         .filter((task) => task.completed_at)
-        .map((task) => Math.max(0, differenceInCalendarDays(parseISO(task.completed_at!), parseISO(task.created_at))));
+        .map((task) =>
+          Math.max(
+            0,
+            differenceInCalendarDays(parseISO(task.completed_at!), parseISO(task.created_at)),
+          ),
+        );
       const avgSpeed =
         completedSpeeds.length > 0
           ? `${round1(completedSpeeds.reduce((sum, item) => sum + item, 0) / completedSpeeds.length)} days`
@@ -320,7 +410,20 @@ function buildAgencyRows(tasks: Task[]): AgencyRow[] {
 }
 
 function agencyFor(task: Task) {
-  return task.department || "District Administration";
+  const agency =
+    stringField(task, "agency") || extractDescriptionField(task.description, "Other Agency");
+  return agency || task.department || "District Administration";
+}
+
+function stringField(task: Task, field: string) {
+  const value = (task as unknown as Record<string, unknown>)[field];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function extractDescriptionField(description: string | null | undefined, field: string) {
+  const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = description?.match(new RegExp(`^${escapedField}:\\s*(.+)$`, "im"));
+  return match?.[1]?.trim() || null;
 }
 
 function isTaskOverdue(task: Task) {
