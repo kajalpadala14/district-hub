@@ -678,6 +678,7 @@ function EventDialog({
         event && !event.id.startsWith("ics-") ? event.id : null,
         payload,
         sessionData.session.access_token,
+        sessionData.session.user.id,
       );
 
       await onSaved();
@@ -1096,21 +1097,42 @@ async function savePlannerTask(
     calendar_sync_enabled: boolean;
   },
   accessToken: string,
+  currentUserId: string,
 ) {
-  const response = await fetch("/api/planner/tasks", {
-    method: id ? "PUT" : "POST",
-    headers: {
-      "authorization": `Bearer ${accessToken}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({ id, ...payload }),
-  });
+  try {
+    const response = await fetch("/api/planner/tasks", {
+      method: id ? "PUT" : "POST",
+      headers: {
+        "authorization": `Bearer ${accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ id, ...payload }),
+    });
 
-  if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) {
+      const message = await response.text();
+      if (![404, 405].includes(response.status)) throw new Error(message);
+      console.warn("[Planner Event Save] server API unavailable, using Supabase fallback", message);
+    } else {
+      const result = (await response.json()) as { task?: Pick<Task, "id"> };
+      if (!result.task?.id) throw new Error("Event save did not return an id.");
+      return result.task;
+    }
+  } catch (error) {
+    if (error instanceof Error && !/Failed to fetch|Load failed|NetworkError/i.test(error.message)) {
+      throw error;
+    }
+    console.warn("[Planner Event Save] server API request failed, using Supabase fallback", error);
+  }
 
-  const result = (await response.json()) as { task?: Pick<Task, "id"> };
-  if (!result.task?.id) throw new Error("Event save did not return an id.");
-  return result.task;
+  const result = id
+    ? await supabase.from("tasks").update(payload).eq("id", id).select("id").single()
+    : await supabase.from("tasks").insert({ ...payload, created_by: currentUserId }).select("id").single();
+
+  if (result.error) throw result.error;
+  if (!result.data?.id) throw new Error("Event save did not return an id.");
+
+  return result.data;
 }
 
 async function isGoogleCalendarConnected(userId: string) {
