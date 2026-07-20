@@ -15,6 +15,7 @@ export const taskCreateSchema = z.object({
   due_date: z.string().optional().nullable(),
   due_time: z.string().optional().nullable(),
   assigned_to: uuid.optional().nullable(),
+  assignee_id: uuid.optional().nullable(),
   department: z.string().trim().max(150).optional().nullable(),
   agency: z.string().trim().max(150).optional().nullable(),
   attachment_url: z.string().url().optional().nullable(),

@@ -330,6 +330,7 @@ function TasksManagementPage() {
     }
     await logTaskAudit(task.id, currentUserId, "task_updated", { status: "done" });
     if (task.calendar_sync_enabled) await syncTaskSafely(task.id);
+    await refreshTasks();
     toast.success("Task marked complete");
   };
 
@@ -349,8 +350,12 @@ function TasksManagementPage() {
       }
     }
     const { error } = await supabase.from("tasks").delete().eq("id", task.id);
-    if (error) toast.error(error.message);
-    else toast.success("Task deleted");
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    await refreshTasks();
+    toast.success("Task deleted");
   };
 
   const handleExtendDeadline = async (task: Task, dueDate: string) => {

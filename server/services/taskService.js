@@ -4,7 +4,7 @@ import { disableSourceCalendarEvents, queueSyncJob } from "./calendarService.js"
 
 const taskSelect = `
   id, task_number, title, description, priority, status, due_date, due_time,
-  backend_assigned_to, backend_allocated_by, department, agency, attachment_url,
+  assignee_id, department, agency, attachment_url,
   comments_count, created_by, created_at, updated_at, completed_at,
   calendar_sync_enabled, calendar_sync_status, google_calendar_event_id,
   calendar_event_html_link, calendar_last_synced_at, calendar_sync_error
@@ -21,7 +21,7 @@ export async function markOverdueTasks() {
 }
 
 export function canSeeTask(user, task) {
-  return user.role === "admin" || user.role === "manager" || task.backend_assigned_to === user.id;
+  return user.role === "admin" || user.role === "manager" || task.assignee_id === user.id;
 }
 
 export function normalizeTaskPayload(payload, user) {
@@ -32,8 +32,7 @@ export function normalizeTaskPayload(payload, user) {
     status: payload.status ? mapStatus(payload.status) : undefined,
     due_date: payload.due_date ?? null,
     due_time: payload.due_time ?? null,
-    backend_assigned_to: payload.assigned_to ?? payload.backend_assigned_to ?? null,
-    backend_allocated_by: user.id,
+    assignee_id: payload.assignee_id ?? payload.assigned_to ?? null,
     department: payload.department ?? null,
     agency: payload.agency ?? null,
     attachment_url: payload.attachment_url ?? null,
@@ -46,12 +45,13 @@ export async function listTasks(user, query) {
 
   let request = supabaseAdmin.from("tasks").select(taskSelect).order("created_at", { ascending: false });
 
-  if (user.role === "employee") request = request.eq("backend_assigned_to", user.id);
+  if (user.role === "employee") request = request.eq("assignee_id", user.id);
   if (query.status) request = request.eq("status", mapStatus(query.status));
   if (query.department) request = request.eq("department", query.department);
   if (query.agency) request = request.eq("agency", query.agency);
   if (query.priority) request = request.eq("priority", mapPriority(query.priority));
-  if (query.assigned_to) request = request.eq("backend_assigned_to", query.assigned_to);
+  if (query.assigned_to) request = request.eq("assignee_id", query.assigned_to);
+  if (query.assignee_id) request = request.eq("assignee_id", query.assignee_id);
   if (query.search) {
     const value = `%${query.search}%`;
     request = request.or(`task_number.ilike.${value},title.ilike.${value},description.ilike.${value}`);
@@ -119,7 +119,7 @@ export async function deleteTask(user, id) {
 
 export async function updateTaskStatus(user, id, status) {
   const task = await getTaskOrThrow(user, id);
-  if (user.role === "employee" && task.backend_assigned_to !== user.id) {
+  if (user.role === "employee" && task.assignee_id !== user.id) {
     throw new ApiError(403, "Users can only update assigned task status");
   }
   const mapped = mapStatus(status);
@@ -169,13 +169,16 @@ export async function bulkEdit(user, taskIds, updates) {
 }
 
 export async function createAssignmentNotification(task) {
-  if (!task.backend_assigned_to) return;
-  await supabaseAdmin.from("task_notifications").insert({
+  if (!task.assignee_id) return;
+  const { error } = await supabaseAdmin.from("task_notifications").insert({
     task_id: task.id,
-    user_id: task.backend_assigned_to,
+    user_id: task.assignee_id,
     title: "Task assigned",
     message: `${task.task_number ?? "Task"}: ${task.title}`,
   });
+  if (error) {
+    console.warn("[Tasks] Assignment notification skipped", error);
+  }
 }
 
 async function queueCalendarJobSafe(userId, taskId, action) {

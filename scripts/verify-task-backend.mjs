@@ -60,7 +60,7 @@ const checks = [
   },
   { table: "task_comments", select: "id,task_id,comment,commented_by,created_at" },
   { table: "task_attachments", select: "id,task_id,file_name,file_url,uploaded_by,uploaded_at" },
-  { table: "task_audit_logs", select: "id,task_id,action,actor_id,metadata,created_at" },
+  { table: "task_audit_logs", select: "id,task_id,action_type,old_value,new_value,performed_by,created_at" },
   { table: "user_roles", select: "user_id,role,created_at" },
 ];
 
@@ -143,9 +143,10 @@ async function runWriteSmokeTest() {
       .from("task_audit_logs")
       .insert({
         task_id: cleanup.taskId,
-        actor_id: authUser.id,
-        action: "task_created",
-        metadata: { marker },
+        action_type: "task_created",
+        old_value: null,
+        new_value: { marker },
+        performed_by: authUser.id,
       })
       .select("id")
       .single();
