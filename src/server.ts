@@ -203,7 +203,8 @@ async function handlePlannerImportedEvents(url: URL) {
       });
     }
 
-    const events = await fetchImportedPlannerEvents(settings.apple_ics_url);
+    const requestedIcsUrl = url.searchParams.get("icsUrl")?.trim();
+    const events = await fetchImportedPlannerEvents(requestedIcsUrl || settings.apple_ics_url);
     return Response.json({ events }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     console.error("[Planner Imported Events] failed", error);

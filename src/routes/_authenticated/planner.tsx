@@ -117,14 +117,17 @@ function PlannerPage() {
   const icsWebcalUrl = useMemo(() => buildPlannerIcsUrl(plannerSettings.token, "webcal"), [plannerSettings.token]);
   const subscriptionUrlWarning = useMemo(() => plannerSubscriptionWarning(icsHttpsUrl), [icsHttpsUrl]);
 
-  const loadImportedEvents = useCallback(async (token: string) => {
+  const loadImportedEvents = useCallback(async (token: string, icsUrl?: string) => {
     if (!token) {
       setImportedIcsTasks([]);
       return [];
     }
 
+    const params = new URLSearchParams({ token });
+    if (icsUrl?.trim()) params.set("icsUrl", icsUrl.trim());
+
     const response = await fetch(
-      `/api/planner/imported-events?token=${encodeURIComponent(token)}`,
+      `/api/planner/imported-events?${params.toString()}`,
       { headers: { accept: "application/json" } },
     );
 
@@ -283,7 +286,7 @@ function PlannerPage() {
       const savedSettings = plannerSettingsFromRow(data);
       setPlannerSettings(savedSettings);
 
-      const importedTasks = await loadImportedEvents(savedSettings.token);
+      const importedTasks = await loadImportedEvents(savedSettings.token, savedSettings.appleIcsUrl);
       focusPlannerWeekOnImportedTasks(importedTasks, setWeekStart);
       setImportedIcsRefreshKey((value) => value + 1);
       toast.success(
