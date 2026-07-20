@@ -10,7 +10,9 @@ import {
   ClipboardList,
   Clock3,
   RefreshCw,
+  Trash2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { addDays, endOfWeek, format, isWithinInterval, parseISO, startOfWeek } from "date-fns";
 
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useDepartments, useProfiles, useTasks, type Task } from "@/hooks/useData";
+import { supabase } from "@/integrations/supabase/client";
 import { dateKeyForTask, isPlannerMeetingTask, isTaskItem } from "@/lib/taskClassification";
 import { cn } from "@/lib/utils";
 
@@ -40,6 +43,7 @@ function GovernanceOverviewPage() {
   ]);
   const [meetingSort, setMeetingSort] = useState<MeetingSortMode>("next");
   const [meetingsCollapsed, setMeetingsCollapsed] = useState(true);
+  const [deletingMeetingId, setDeletingMeetingId] = useState<string | null>(null);
   const [now, setNow] = useState<Date | null>(null);
 
   useEffect(() => {
@@ -55,14 +59,18 @@ function GovernanceOverviewPage() {
   const totalTasks = taskItems.length;
   const completedTasks = taskItems.filter((task) => task.status === "done").length;
   const overdueTasks = taskItems.filter((task) => overdueTask(task, todayKey)).length;
-  const pendingTasks = taskItems.filter((task) => task.status !== "done" && !overdueTask(task, todayKey)).length;
+  const pendingTasks = taskItems.filter(
+    (task) => task.status !== "done" && !overdueTask(task, todayKey),
+  ).length;
 
   const scheduledTasks = taskItems.filter((task) => task.scheduled_date || task.due_date);
   const plannerMeetingTasks = tasks.filter(isPlannerMeetingTask);
   const scheduledToday = scheduledTasks.filter((task) => dateKeyForTask(task) === todayKey);
   const scheduledTomorrow = scheduledTasks.filter((task) => dateKeyForTask(task) === tomorrowKey);
   const reviewTasks = scheduledTasks.filter((task) => taskMatchesText(task, "review"));
-  const fieldVisitTasks = scheduledTasks.filter((task) => taskMatchesText(task, "field visit", "visit"));
+  const fieldVisitTasks = scheduledTasks.filter((task) =>
+    taskMatchesText(task, "field visit", "visit"),
+  );
   const weekTimeline = scheduledTasks
     .filter((task) => {
       const dateKey = dateKeyForTask(task);
@@ -78,14 +86,72 @@ function GovernanceOverviewPage() {
     : [];
 
   const kpis = [
-    { label: "Total Tasks", value: totalTasks, icon: ClipboardList, tone: "text-primary", bar: "bg-primary/20" },
-    { label: "Completed", value: completedTasks, icon: CheckCircle2, tone: "text-success", bar: "bg-success/20" },
-    { label: "Pending", value: pendingTasks, icon: Clock3, tone: "text-warning-foreground", bar: "bg-warning/20" },
-    { label: "Overdue", value: overdueTasks, icon: AlertTriangle, tone: "text-destructive", bar: "bg-destructive/15" },
+    {
+      label: "Total Tasks",
+      value: totalTasks,
+      icon: ClipboardList,
+      tone: "text-primary",
+      bar: "bg-primary/20",
+    },
+    {
+      label: "Completed",
+      value: completedTasks,
+      icon: CheckCircle2,
+      tone: "text-success",
+      bar: "bg-success/20",
+    },
+    {
+      label: "Pending",
+      value: pendingTasks,
+      icon: Clock3,
+      tone: "text-warning-foreground",
+      bar: "bg-warning/20",
+    },
+    {
+      label: "Overdue",
+      value: overdueTasks,
+      icon: AlertTriangle,
+      tone: "text-destructive",
+      bar: "bg-destructive/15",
+    },
   ];
 
   const refreshOverview = async () => {
     await Promise.all([refreshTasks(), refreshProfiles(), refreshDepartments()]);
+  };
+
+  const deleteMeeting = async (task: Task) => {
+    const confirmed = window.confirm(`Delete meeting "${task.title}"?`);
+    if (!confirmed) return;
+
+    setDeletingMeetingId(task.id);
+    try {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw sessionError;
+      const accessToken = sessionData.session?.access_token;
+      if (!accessToken) throw new Error("Please sign in before deleting meetings.");
+
+      const response = await fetch("/api/tasks", {
+        method: "DELETE",
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ id: task.id }),
+      });
+
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || "Meeting delete failed");
+      }
+
+      await refreshOverview();
+      toast.success("Meeting deleted");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Meeting delete failed");
+    } finally {
+      setDeletingMeetingId(null);
+    }
   };
 
   return (
@@ -94,10 +160,16 @@ function GovernanceOverviewPage() {
         <div>
           <h2 className="text-3xl font-semibold tracking-tight">Overview</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            {now ? format(now, "EEEE, d MMMM yyyy") : "Loading date"} - live task and department summary
+            {now ? format(now, "EEEE, d MMMM yyyy") : "Loading date"} - live task and department
+            summary
           </p>
         </div>
-        <Button variant="ghost" size="icon" aria-label="Refresh overview" onClick={() => void refreshOverview()}>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Refresh overview"
+          onClick={() => void refreshOverview()}
+        >
           <RefreshCw className="h-4 w-4" />
         </Button>
       </section>
@@ -109,10 +181,17 @@ function GovernanceOverviewPage() {
               <div className={cn("absolute inset-x-0 bottom-0 h-1.5", item.bar)} />
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-muted-foreground">{item.label}</p>
+                  <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-muted-foreground">
+                    {item.label}
+                  </p>
                   <p className="mt-2 text-3xl font-semibold tabular-nums">{item.value}</p>
                 </div>
-                <div className={cn("flex h-11 w-11 items-center justify-center rounded-xl bg-background shadow-card", item.tone)}>
+                <div
+                  className={cn(
+                    "flex h-11 w-11 items-center justify-center rounded-xl bg-background shadow-card",
+                    item.tone,
+                  )}
+                >
                   <item.icon className="h-5 w-5" aria-hidden="true" />
                 </div>
               </div>
@@ -126,7 +205,10 @@ function GovernanceOverviewPage() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <h3 className="text-2xl font-extrabold tracking-tight">Department Meetings</h3>
             <div className="flex flex-wrap items-center gap-2">
-              <Select value={meetingSort} onValueChange={(value) => setMeetingSort(value as MeetingSortMode)}>
+              <Select
+                value={meetingSort}
+                onValueChange={(value) => setMeetingSort(value as MeetingSortMode)}
+              >
                 <SelectTrigger className="h-9 w-[196px] rounded-full border-border/80 bg-background px-5 text-sm font-bold text-slate-600 shadow-sm">
                   <SelectValue />
                 </SelectTrigger>
@@ -142,7 +224,11 @@ function GovernanceOverviewPage() {
                 className="h-9 rounded-full px-4 text-sm font-bold text-slate-600 shadow-sm"
                 onClick={() => setMeetingsCollapsed((value) => !value)}
               >
-                {meetingsCollapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+                {meetingsCollapsed ? (
+                  <ChevronDown className="h-4 w-4" />
+                ) : (
+                  <ChevronUp className="h-4 w-4" />
+                )}
                 {meetingsCollapsed ? "Expand" : "Collapse"}
               </Button>
               <Button asChild variant="link" className="h-9 px-1 text-base font-bold text-primary">
@@ -168,7 +254,12 @@ function GovernanceOverviewPage() {
             </Card>
           ) : (
             departmentSummaries.map((department) => (
-              <DepartmentMeetingCard key={department.name} department={department} />
+              <DepartmentMeetingCard
+                key={department.name}
+                department={department}
+                deletingMeetingId={deletingMeetingId}
+                onDeleteMeeting={deleteMeeting}
+              />
             ))
           )}
         </section>
@@ -180,8 +271,16 @@ function GovernanceOverviewPage() {
               <div className="mt-4 space-y-4">
                 <QuickStat label="Departments" value={departments.length} />
                 <QuickStat label="Employees" value={profiles.length} />
-                <QuickStat label="Scheduled Items" value={scheduledTasks.length} tone="text-primary" />
-                <QuickStat label="Scheduled Today" value={scheduledToday.length} tone="text-primary" />
+                <QuickStat
+                  label="Scheduled Items"
+                  value={scheduledTasks.length}
+                  tone="text-primary"
+                />
+                <QuickStat
+                  label="Scheduled Today"
+                  value={scheduledToday.length}
+                  tone="text-primary"
+                />
                 <QuickStat label="Completed" value={completedTasks} tone="text-success" />
               </div>
             </CardContent>
@@ -199,7 +298,11 @@ function GovernanceOverviewPage() {
                 </span>
               </div>
               <div className="mt-5 flex flex-wrap gap-2">
-                <TimelineChip label={`Tasks (${scheduledToday.length ? "Today" : "This Week"})`} count={weekTimeline.length} tone="primary" />
+                <TimelineChip
+                  label={`Tasks (${scheduledToday.length ? "Today" : "This Week"})`}
+                  count={weekTimeline.length}
+                  tone="primary"
+                />
                 <TimelineChip label="Reviews" count={reviewTasks.length} tone="violet" />
                 <TimelineChip label="Field Visits" count={fieldVisitTasks.length} tone="success" />
               </div>
@@ -220,7 +323,12 @@ function GovernanceOverviewPage() {
           <Card className="rounded-xl shadow-elevated">
             <CardContent className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-2">
               <ScheduleColumn title="Scheduled Today" items={scheduledToday} />
-              <ScheduleColumn title="Scheduled Tomorrow" items={scheduledTomorrow} emptyLabel="Nothing scheduled tomorrow" muted />
+              <ScheduleColumn
+                title="Scheduled Tomorrow"
+                items={scheduledTomorrow}
+                emptyLabel="Nothing scheduled tomorrow"
+                muted
+              />
             </CardContent>
           </Card>
 
@@ -277,7 +385,11 @@ function buildDepartmentSummaries(tasks: Task[]): DepartmentSummary[] {
     .filter((department) => department.total > 0);
 }
 
-function sortDepartmentSummaries(items: DepartmentSummary[], mode: MeetingSortMode, todayTime: number) {
+function sortDepartmentSummaries(
+  items: DepartmentSummary[],
+  mode: MeetingSortMode,
+  todayTime: number,
+) {
   const sorted = [...items];
   if (mode === "department") {
     return sorted.sort((a, b) => a.name.localeCompare(b.name));
@@ -303,7 +415,15 @@ function latestMeetingTime(department: DepartmentSummary) {
   return times.length > 0 ? Math.max(...times) : 0;
 }
 
-function DepartmentMeetingCard({ department }: { department: DepartmentSummary }) {
+function DepartmentMeetingCard({
+  department,
+  deletingMeetingId,
+  onDeleteMeeting,
+}: {
+  department: DepartmentSummary;
+  deletingMeetingId: string | null;
+  onDeleteMeeting: (task: Task) => void | Promise<void>;
+}) {
   return (
     <Card className="overflow-hidden rounded-2xl border-border/80 bg-card shadow-elevated">
       <CardContent className="p-0">
@@ -311,11 +431,15 @@ function DepartmentMeetingCard({ department }: { department: DepartmentSummary }
           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-sm font-extrabold text-white shadow-card">
             {initialsForDepartment(department.name)}
           </div>
-          <p className="min-w-0 truncate text-xl font-extrabold text-foreground">{department.name}</p>
+          <p className="min-w-0 truncate text-xl font-extrabold text-foreground">
+            {department.name}
+          </p>
         </div>
         <div className="grid min-h-24 border-t sm:grid-cols-[155px_repeat(3,minmax(0,1fr))]">
           <div className="flex items-center border-b px-5 py-4 sm:border-b-0 sm:border-r">
-            <span className="text-xs font-extrabold uppercase tracking-wide text-muted-foreground">Meetings</span>
+            <span className="text-xs font-extrabold uppercase tracking-wide text-muted-foreground">
+              Meetings
+            </span>
           </div>
           {department.recentTasks.length === 0 ? (
             <div className="flex items-center px-5 py-5 text-sm text-muted-foreground sm:col-span-3">
@@ -323,7 +447,12 @@ function DepartmentMeetingCard({ department }: { department: DepartmentSummary }
             </div>
           ) : (
             department.recentTasks.map((task) => (
-              <MeetingCell key={task.id} task={task} />
+              <MeetingCell
+                key={task.id}
+                task={task}
+                deleting={deletingMeetingId === task.id}
+                onDelete={() => onDeleteMeeting(task)}
+              />
             ))
           )}
         </div>
@@ -332,18 +461,48 @@ function DepartmentMeetingCard({ department }: { department: DepartmentSummary }
   );
 }
 
-function MeetingCell({ task }: { task: Task }) {
+function MeetingCell({
+  task,
+  deleting,
+  onDelete,
+}: {
+  task: Task;
+  deleting: boolean;
+  onDelete: () => void | Promise<void>;
+}) {
   return (
-    <Link
-      to="/planner"
-      className="flex min-h-24 flex-col items-center justify-center gap-2 border-b px-4 py-4 text-center transition-colors hover:bg-primary/5 sm:border-b-0 sm:border-r last:border-r-0"
-    >
-      <span className="text-sm font-extrabold tabular-nums text-slate-700">{meetingDateLabel(task)}</span>
-      <span className={cn("text-[11px] font-extrabold uppercase tracking-wide", meetingStatusTone(task))}>
-        {meetingStatusLabel(task)}
-      </span>
-      <span className="text-xs font-bold text-slate-400">{meetingTimeLabel(task)}</span>
-    </Link>
+    <div className="relative flex min-h-24 flex-col items-center justify-center gap-2 border-b px-4 py-4 text-center transition-colors hover:bg-primary/5 sm:border-b-0 sm:border-r last:border-r-0">
+      <Link to="/planner" className="flex min-w-0 flex-col items-center gap-2">
+        <span className="text-sm font-extrabold tabular-nums text-slate-700">
+          {meetingDateLabel(task)}
+        </span>
+        <span
+          className={cn(
+            "text-[11px] font-extrabold uppercase tracking-wide",
+            meetingStatusTone(task),
+          )}
+        >
+          {meetingStatusLabel(task)}
+        </span>
+        <span className="text-xs font-bold text-slate-400">{meetingTimeLabel(task)}</span>
+      </Link>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="absolute right-2 top-2 h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+        aria-label={`Delete meeting ${task.title}`}
+        title="Delete meeting"
+        disabled={deleting}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void onDelete();
+        }}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
+    </div>
   );
 }
 
@@ -352,15 +511,27 @@ function TimelineItem({ task, todayKey }: { task: Task; todayKey: string }) {
   return (
     <div className="grid grid-cols-[minmax(104px,134px)_minmax(0,1fr)] gap-3 rounded-xl border border-primary/20 bg-primary/5 p-3 shadow-card max-[420px]:grid-cols-1">
       <div className="rounded-lg border border-primary/10 bg-background/80 p-3 text-xs">
-        <p className="font-bold uppercase text-primary">{dateKey ? format(parseISO(dateKey), "EEE, d MMM") : "No date"}</p>
-        <p className="mt-2 font-semibold text-primary/90">{task.due_time ? task.due_time.slice(0, 5) : "All day"}</p>
+        <p className="font-bold uppercase text-primary">
+          {dateKey ? format(parseISO(dateKey), "EEE, d MMM") : "No date"}
+        </p>
+        <p className="mt-2 font-semibold text-primary/90">
+          {task.due_time ? task.due_time.slice(0, 5) : "All day"}
+        </p>
       </div>
       <div className="min-w-0 py-0.5">
-        <Badge variant="outline" className={cn("h-6 rounded-full px-3 text-[11px] font-bold uppercase", statusTone(task, todayKey))}>
+        <Badge
+          variant="outline"
+          className={cn(
+            "h-6 rounded-full px-3 text-[11px] font-bold uppercase",
+            statusTone(task, todayKey),
+          )}
+        >
           {statusLabel(task, todayKey)}
         </Badge>
         <p className="mt-2 line-clamp-2 text-sm font-semibold leading-5">{task.title}</p>
-        <p className="mt-1 text-xs font-medium text-muted-foreground">{task.department || "Task follow-up"}</p>
+        <p className="mt-1 text-xs font-medium text-muted-foreground">
+          {task.department || "Task follow-up"}
+        </p>
       </div>
     </div>
   );
@@ -382,14 +553,27 @@ function TimelineChip({
   }[tone];
 
   return (
-    <span className={cn("inline-flex h-9 items-center rounded-full border px-4 text-sm font-bold", chipTone)}>
+    <span
+      className={cn(
+        "inline-flex h-9 items-center rounded-full border px-4 text-sm font-bold",
+        chipTone,
+      )}
+    >
       {label}
       {label.includes("(") ? null : <span className="ml-1.5 text-xs opacity-70">{count}</span>}
     </span>
   );
 }
 
-function QuickStat({ label, value, tone = "text-foreground" }: { label: string; value: number; tone?: string }) {
+function QuickStat({
+  label,
+  value,
+  tone = "text-foreground",
+}: {
+  label: string;
+  value: number;
+  tone?: string;
+}) {
   return (
     <div className="flex items-center justify-between gap-4">
       <span className="text-sm text-muted-foreground">{label}</span>
@@ -401,8 +585,7 @@ function QuickStat({ label, value, tone = "text-foreground" }: { label: string; 
 function overdueTask(task: { status: string; due_date: string | null }, todayKey: string) {
   return (
     task.status !== "done" &&
-    (task.status === "blocked" ||
-      (!!todayKey && !!task.due_date && task.due_date < todayKey))
+    (task.status === "blocked" || (!!todayKey && !!task.due_date && task.due_date < todayKey))
   );
 }
 
@@ -421,13 +604,17 @@ function ScheduleColumn({
     <div className={cn("rounded-lg border p-3", muted ? "bg-muted/25" : "bg-primary/5")}>
       <h3 className="text-xs font-bold uppercase tracking-wide text-primary">{title}</h3>
       {items.length === 0 ? (
-        <p className="mt-2 text-xs italic text-muted-foreground">{emptyLabel ?? "Nothing scheduled"}</p>
+        <p className="mt-2 text-xs italic text-muted-foreground">
+          {emptyLabel ?? "Nothing scheduled"}
+        </p>
       ) : (
         <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
           {items.map((task) => (
             <div key={task.id} className="rounded-md border bg-background px-3 py-2 shadow-card">
               <p className="line-clamp-2 text-xs font-semibold">{task.title}</p>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">{task.department || "No department"}</p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                {task.department || "No department"}
+              </p>
             </div>
           ))}
         </div>
@@ -436,9 +623,24 @@ function ScheduleColumn({
   );
 }
 
-function QuickAction({ to, label, highlighted }: { to: "/employees" | "/tasks" | "/planner"; label: string; highlighted?: boolean }) {
+function QuickAction({
+  to,
+  label,
+  highlighted,
+}: {
+  to: "/employees" | "/tasks" | "/planner";
+  label: string;
+  highlighted?: boolean;
+}) {
   return (
-    <Button asChild variant="ghost" className={cn("h-12 w-full justify-between rounded-none px-4", highlighted && "bg-primary/12 text-primary hover:bg-primary/16 hover:text-primary")}>
+    <Button
+      asChild
+      variant="ghost"
+      className={cn(
+        "h-12 w-full justify-between rounded-none px-4",
+        highlighted && "bg-primary/12 text-primary hover:bg-primary/16 hover:text-primary",
+      )}
+    >
       <Link to={to}>
         <span>{label}</span>
         <ArrowRight className="h-4 w-4" />
@@ -495,7 +697,8 @@ function statusLabel(task: Task, todayKey: string) {
 
 function statusTone(task: Task, todayKey: string) {
   if (task.status === "done") return "bg-success/10 text-success border-success/30";
-  if (overdueTask(task, todayKey)) return "bg-destructive/15 text-destructive border-destructive/30";
+  if (overdueTask(task, todayKey))
+    return "bg-destructive/15 text-destructive border-destructive/30";
   if (task.status === "in_progress") return "bg-primary/10 text-primary border-primary/30";
   return "bg-muted text-muted-foreground border-muted-foreground/20";
 }
@@ -503,5 +706,9 @@ function statusTone(task: Task, todayKey: string) {
 function initialsForDepartment(name: string) {
   const parts = name.split(/\s+/).filter(Boolean);
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return parts.slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+  return parts
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase();
 }

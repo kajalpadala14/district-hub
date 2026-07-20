@@ -74,7 +74,7 @@ export default {
 };
 
 async function handleTaskSave(request: Request) {
-  if (!["POST", "PUT"].includes(request.method)) {
+  if (!["POST", "PUT", "DELETE"].includes(request.method)) {
     return new Response("Method not allowed", {
       status: 405,
       headers: { "content-type": "text/plain; charset=utf-8" },
@@ -85,6 +85,28 @@ async function handleTaskSave(request: Request) {
     const user = await authenticatedPlannerUser(request);
     const body = (await request.json()) as TaskSaveRequest;
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+    if (request.method === "DELETE") {
+      if (!body.id) {
+        return new Response("Task id required", {
+          status: 400,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        });
+      }
+
+      const existing = await getTaskForUser(body.id, user.id, user.canManageAllTasks);
+      if (!existing) {
+        return new Response("Task not found", {
+          status: 404,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        });
+      }
+
+      const { error } = await supabaseAdmin.from("tasks").delete().eq("id", body.id);
+      if (error) throw error;
+      return Response.json({ ok: true }, { status: 200 });
+    }
+
     const payload = taskPayload(body);
 
     if (request.method === "PUT") {
