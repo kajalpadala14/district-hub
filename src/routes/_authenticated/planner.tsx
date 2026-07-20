@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { addDays, format, isSameDay, parseISO, startOfWeek } from "date-fns";
 import {
   CalendarDays,
@@ -103,10 +103,30 @@ function PlannerPage() {
   const slots = useMemo(() => buildPlannerSlots(plannerSettings), [plannerSettings]);
   const icsHttpsUrl = useMemo(() => buildPlannerIcsUrl(plannerSettings.token, "https"), [plannerSettings.token]);
   const icsWebcalUrl = useMemo(() => buildPlannerIcsUrl(plannerSettings.token, "webcal"), [plannerSettings.token]);
+  const subscriptionUrlWarning = useMemo(() => plannerSubscriptionWarning(icsHttpsUrl), [icsHttpsUrl]);
   const meetings = useMemo(
     () => [...tasks, ...importedIcsTasks].filter(isPlannerMeetingTask),
     [tasks, importedIcsTasks],
   );
+
+  const loadImportedEvents = useCallback(async (token: string) => {
+    if (!token) {
+      setImportedIcsTasks([]);
+      return [];
+    }
+
+    const response = await fetch(
+      `/api/planner/imported-events?token=${encodeURIComponent(token)}`,
+      { headers: { accept: "application/json" } },
+    );
+
+    if (!response.ok) throw new Error(await response.text());
+
+    const payload = (await response.json()) as { events?: ImportedPlannerEvent[] };
+    const importedTasks = (payload.events ?? []).map(importedPlannerEventToTask);
+    setImportedIcsTasks(importedTasks);
+    return importedTasks;
+  }, []);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -156,30 +176,28 @@ function PlannerPage() {
 
     let cancelled = false;
 
-    const loadImportedEvents = async () => {
+    const refreshImportedEvents = async () => {
       try {
-        const response = await fetch(
-          `/api/planner/imported-events?token=${encodeURIComponent(plannerSettings.token)}`,
-          { headers: { accept: "application/json" } },
-        );
-
-        if (!response.ok) throw new Error(await response.text());
-
-        const payload = (await response.json()) as { events?: ImportedPlannerEvent[] };
-        if (!cancelled) {
-          setImportedIcsTasks((payload.events ?? []).map(importedPlannerEventToTask));
-        }
+        const importedTasks = await loadImportedEvents(plannerSettings.token);
+        if (cancelled) return;
+        setImportedIcsTasks(importedTasks);
       } catch (error) {
         console.warn("[Planner ICS Import] failed", error);
         if (!cancelled) setImportedIcsTasks([]);
       }
     };
 
-    void loadImportedEvents();
+    void refreshImportedEvents();
+    const interval = window.setInterval(refreshImportedEvents, 60_000);
+    const handleFocus = () => void refreshImportedEvents();
+    window.addEventListener("focus", handleFocus);
+
     return () => {
       cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", handleFocus);
     };
-  }, [plannerSettings.token, importedIcsRefreshKey]);
+  }, [plannerSettings.token, importedIcsRefreshKey, loadImportedEvents]);
 
   const tasksByDay = useMemo(() => {
     const map = new Map<string, Task[]>();
@@ -188,6 +206,7 @@ function PlannerPage() {
       const anchor = dateKeyForTask(task);
       if (anchor && map.has(anchor)) map.get(anchor)!.push(task);
     }
+    for (const dayTasks of map.values()) dayTasks.sort(comparePlannerTasks);
     return map;
   }, [meetings, days]);
 
@@ -213,9 +232,17 @@ function PlannerPage() {
         .single();
 
       if (error) throw error;
-      setPlannerSettings(plannerSettingsFromRow(data));
+      const savedSettings = plannerSettingsFromRow(data);
+      setPlannerSettings(savedSettings);
+
+      const importedTasks = await loadImportedEvents(savedSettings.token);
+      focusPlannerWeekOnImportedTasks(importedTasks, setWeekStart);
       setImportedIcsRefreshKey((value) => value + 1);
-      toast.success("Planner settings saved in Supabase");
+      toast.success(
+        importedTasks.length
+          ? `Planner connected. ${importedTasks.length} ICS events added.`
+          : "Planner settings saved. No dated ICS events found.",
+      );
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Planner settings save failed");
     } finally {
@@ -335,6 +362,7 @@ function PlannerPage() {
           settings={plannerSettings}
           httpsUrl={icsHttpsUrl}
           webcalUrl={icsWebcalUrl}
+          subscriptionUrlWarning={subscriptionUrlWarning}
           onChange={setPlannerSettings}
           onSave={savePlannerSettings}
           onCopy={copyText}
@@ -370,8 +398,8 @@ function PlannerPage() {
               <div key={key} className="border-r border-border/70 last:border-r-0">
                 <div className="space-y-2 p-2">
                   {slots.map((slot, slotIndex) => {
-                    const task = dayTasks[slotIndex % Math.max(dayTasks.length, 1)];
-                    const showTask = dayTasks.length > 0 && slotIndex === 5;
+                    const task = taskForPlannerSlot(dayTasks, slot, slotIndex);
+                    const showTask = !!task;
                     return (
                       <button
                         key={`${key}-${slot.range}`}
@@ -406,7 +434,7 @@ function PlannerPage() {
                                   {task.status === "blocked" ? "Meeting - Cancelled" : "Meeting - Confirmed"}
                                 </p>
                                 <p className="text-[11px] text-primary/80">
-                                  Time: {slot.range.split(" - ")[0]}
+                                  Time: {task.due_time ? toDisplayTime(task.due_time) : "All day"}
                                 </p>
                                 <p className="truncate text-[11px] text-primary/80">
                                   {task.department || "Governance Department"}
@@ -448,6 +476,7 @@ function PlannerSettingsPanel({
   settings,
   httpsUrl,
   webcalUrl,
+  subscriptionUrlWarning,
   onChange,
   onSave,
   onCopy,
@@ -457,6 +486,7 @@ function PlannerSettingsPanel({
   settings: PlannerSettings;
   httpsUrl: string;
   webcalUrl: string;
+  subscriptionUrlWarning: string;
   onChange: (settings: PlannerSettings) => void;
   onSave: () => void | Promise<void>;
   onCopy: (label: string, value: string) => Promise<void>;
@@ -490,6 +520,9 @@ function PlannerSettingsPanel({
         <div className="min-w-0 rounded-lg border border-success/30 bg-success/5 p-4">
           <p className="text-xs font-bold uppercase tracking-wide text-success">Dashboard to Apple (HTTPS)</p>
           <Input className="mt-2 min-w-0 bg-background text-xs sm:text-sm" value={httpsUrl} readOnly />
+          {subscriptionUrlWarning && (
+            <p className="mt-2 text-xs font-medium text-destructive">{subscriptionUrlWarning}</p>
+          )}
           <div className="mt-3 grid gap-2 sm:flex sm:flex-wrap">
             <Button size="sm" className="w-full bg-success text-success-foreground hover:bg-success/90 sm:w-auto" disabled={!httpsUrl} onClick={() => onCopy("HTTPS ICS URL", httpsUrl)}>
               Copy HTTPS
@@ -920,10 +953,98 @@ function buildPlannerSlots(settings: PlannerSettings): PlannerSlot[] {
 
 function buildPlannerIcsUrl(token: string, scheme: "https" | "webcal") {
   if (!token) return "";
-  if (typeof window === "undefined") return `/api/planner/export.ics?token=${encodeURIComponent(token)}`;
-  const url = new URL(`/api/planner/export.ics?token=${encodeURIComponent(token)}`, window.location.origin);
+  const origin = plannerPublicOrigin();
+  if (!origin) return `/api/planner/export.ics?token=${encodeURIComponent(token)}`;
+  const url = new URL(`/api/planner/export.ics?token=${encodeURIComponent(token)}`, origin);
+  if (scheme === "https" && url.protocol === "http:" && !isPrivatePlannerHost(url.hostname)) {
+    url.protocol = "https:";
+  }
   if (scheme === "webcal") url.protocol = "webcal:";
   return url.toString();
+}
+
+function plannerPublicOrigin() {
+  const configured = import.meta.env.VITE_PLANNER_PUBLIC_BASE_URL?.trim();
+  if (configured) {
+    try {
+      const url = new URL(/^https?:\/\//i.test(configured) ? configured : `https://${configured}`);
+      return url.origin;
+    } catch {
+      return configured;
+    }
+  }
+  if (typeof window === "undefined") return "";
+  return window.location.origin;
+}
+
+function plannerSubscriptionWarning(urlText: string) {
+  if (!urlText) return "";
+  try {
+    const url = new URL(urlText);
+    if (url.protocol !== "https:" && url.protocol !== "webcal:") {
+      return "Calendar subscription needs a public HTTPS app URL.";
+    }
+    if (isPrivatePlannerHost(url.hostname)) {
+      return "This is a local/private URL. Set VITE_PLANNER_PUBLIC_BASE_URL to your deployed HTTPS app URL before using Google or Apple subscription.";
+    }
+  } catch {
+    return "Calendar subscription URL is invalid.";
+  }
+  return "";
+}
+
+function isPrivatePlannerHost(hostname: string) {
+  const host = hostname.toLowerCase();
+  return (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host.endsWith(".local") ||
+    host.startsWith("10.") ||
+    host.startsWith("192.168.") ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
+  );
+}
+
+function taskForPlannerSlot(dayTasks: Task[], slot: PlannerSlot, slotIndex: number) {
+  const [slotStartText, slotEndText] = slot.range.split(" - ");
+  const slotStart = minutesFromTime(slotStartText);
+  const slotEnd = minutesFromTime(slotEndText ?? slotStartText);
+
+  const timedTask = dayTasks.find((task) => {
+    const taskTime = normalizeTaskTimeMinutes(task.due_time);
+    return taskTime !== null && taskTime >= slotStart && taskTime < slotEnd;
+  });
+  if (timedTask) return timedTask;
+
+  const untimedTasks = dayTasks.filter((task) => normalizeTaskTimeMinutes(task.due_time) === null);
+  return untimedTasks[slotIndex] ?? null;
+}
+
+function comparePlannerTasks(a: Task, b: Task) {
+  const aTime = normalizeTaskTimeMinutes(a.due_time) ?? Number.MAX_SAFE_INTEGER;
+  const bTime = normalizeTaskTimeMinutes(b.due_time) ?? Number.MAX_SAFE_INTEGER;
+  if (aTime !== bTime) return aTime - bTime;
+  return a.title.localeCompare(b.title);
+}
+
+function normalizeTaskTimeMinutes(value: string | null | undefined) {
+  if (!value) return null;
+  const normalized = toTimeInput(value);
+  if (!/^\d{2}:\d{2}$/.test(normalized)) return null;
+  return minutesFromTime(normalized);
+}
+
+function focusPlannerWeekOnImportedTasks(tasks: Task[], setWeekStart: (date: Date) => void) {
+  const dates = tasks
+    .map(dateKeyForTask)
+    .filter((date): date is string => !!date && /^\d{4}-\d{2}-\d{2}$/.test(date))
+    .sort();
+  if (!dates.length) return;
+
+  const today = format(new Date(), "yyyy-MM-dd");
+  const targetDate = dates.find((date) => date >= today) ?? dates[0];
+  setWeekStart(startOfWeek(parseISO(targetDate), { weekStartsOn: 1 }));
 }
 
 function buildIcsContent(tasks: Task[]) {
