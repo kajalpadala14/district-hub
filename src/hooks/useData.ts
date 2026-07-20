@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import type { Database } from "@/integrations/supabase/types";
 
 export type Task = Database["public"]["Tables"]["tasks"]["Row"];
+export type PlannerEvent = Database["public"]["Tables"]["planner_events"]["Row"];
 export type Profile = Database["public"]["Tables"]["profiles"]["Row"];
 export type Department = Database["public"]["Tables"]["departments"]["Row"];
 export type TaskStatus = Database["public"]["Enums"]["task_status"];
@@ -46,22 +47,127 @@ export function useTasks() {
 
     const channel = supabase
       .channel("tasks-changes")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "tasks" },
-        () => {
-          if (mounted) void load();
-        },
-      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, () => {
+        if (mounted) void load();
+      })
       .subscribe();
 
     return () => {
       mounted = false;
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [load]);
 
   return { tasks, loading, error, refresh: load };
+}
+
+export function usePlannerEvents() {
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        setTasks([]);
+        setLoading(false);
+        return;
+      }
+
+      const { data, error: queryError } = await supabase
+        .from("planner_events")
+        .select("*")
+        .order("date", { ascending: true })
+        .order("start_time", { ascending: true, nullsFirst: false });
+      if (queryError) {
+        if (isPlannerEventsTableUnavailable(queryError)) {
+          const { data: legacyData, error: legacyError } = await supabase
+            .from("tasks")
+            .select("*")
+            .or("scheduled_date.not.is.null,due_date.not.is.null")
+            .order("created_at", { ascending: false });
+          if (legacyError) throw legacyError;
+          setTasks(legacyData ?? []);
+          return;
+        }
+        throw queryError;
+      }
+      setTasks((data ?? []).map(plannerEventToTask));
+    } catch (loadError) {
+      const message =
+        loadError instanceof Error ? loadError.message : "Failed to load planner events";
+      console.error("[Planner Events] Load failed", loadError);
+      setError(message);
+      setTasks([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    void load();
+
+    const channel = supabase
+      .channel("planner-events-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "planner_events" }, () => {
+        if (mounted) void load();
+      })
+      .subscribe();
+
+    return () => {
+      mounted = false;
+      supabase.removeChannel(channel);
+    };
+  }, [load]);
+
+  return { tasks, loading, error, refresh: load };
+}
+
+function isPlannerEventsTableUnavailable(error: { code?: string; message?: string }) {
+  const message = error.message ?? "";
+  return error.code === "42P01" || /planner_events/i.test(message) || /schema cache/i.test(message);
+}
+
+function plannerEventToTask(event: PlannerEvent): Task {
+  const status: TaskStatus =
+    event.status === "cancelled"
+      ? "blocked"
+      : event.status === "completed"
+        ? "done"
+        : event.status === "tentative"
+          ? "todo"
+          : "in_progress";
+  const priority = ["low", "medium", "high", "urgent"].includes(event.priority)
+    ? (event.priority as TaskPriority)
+    : "medium";
+
+  return {
+    id: event.id,
+    title: event.title,
+    description: event.description,
+    department: event.location,
+    scheduled_date: event.date,
+    due_date: event.date,
+    due_time: event.is_all_day ? null : event.start_time,
+    status,
+    priority,
+    created_by: event.user_id,
+    created_at: event.created_at,
+    updated_at: event.updated_at,
+    assignee_id: null,
+    completed_at: event.status === "completed" ? event.updated_at : null,
+    calendar_event_html_link: null,
+    calendar_last_synced_at: null,
+    calendar_retry_count: 0,
+    calendar_sync_enabled: false,
+    calendar_sync_error: null,
+    calendar_sync_status: "not_synced",
+    google_calendar_event_id: null,
+  };
 }
 
 export function useProfiles() {

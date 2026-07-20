@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { addDays, format, isSameDay, parseISO, startOfWeek } from "date-fns";
+import { useEffect, useMemo, useState } from "react";
+import { addDays, format, isSameDay, startOfWeek } from "date-fns";
 import {
   CalendarDays,
   ChevronLeft,
@@ -35,11 +35,15 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useAuth } from "@/hooks/useAuth";
-import { useDepartments, useProfiles, useTasks, type Task } from "@/hooks/useData";
+import { useDepartments, usePlannerEvents, useProfiles, type Task } from "@/hooks/useData";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { requestGoogleCalendarConnection, syncTaskCalendar } from "@/lib/googleCalendar";
-import { dateKeyForTask, isPlannerMeetingTask, PLANNER_MEETING_TYPE_LINE } from "@/lib/taskClassification";
+import {
+  dateKeyForTask,
+  isPlannerMeetingTask,
+  PLANNER_MEETING_TYPE_LINE,
+} from "@/lib/taskClassification";
 
 export const Route = createFileRoute("/_authenticated/planner")({
   component: PlannerPage,
@@ -84,7 +88,7 @@ const pendingPlannerGoogleSyncKey = "district-hub:pending-planner-google-sync";
 
 function PlannerPage() {
   const { user } = useAuth();
-  const { tasks, refresh: refreshTasks } = useTasks();
+  const { tasks, refresh: refreshTasks } = usePlannerEvents();
   const { profiles } = useProfiles();
   const { departments } = useDepartments([
     ...tasks.map((task) => task.department),
@@ -100,49 +104,28 @@ function PlannerPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [plannerSettings, setPlannerSettings] = useState<PlannerSettings>(defaultPlannerSettings);
   const [settingsSaving, setSettingsSaving] = useState(false);
-  const [importedIcsTasks, setImportedIcsTasks] = useState<Task[]>([]);
-  const [importedIcsRefreshKey, setImportedIcsRefreshKey] = useState(0);
-  const [focusedImportToken, setFocusedImportToken] = useState("");
 
-  const days = useMemo(() => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)), [weekStart]);
-  const meetings = useMemo(
-    () => {
-      if (plannerSettings.appleIcsUrl.trim() && importedIcsTasks.length) {
-        return importedIcsTasks.filter(isPlannerMeetingTask);
-      }
-      return tasks.filter(isPlannerMeetingTask);
-    },
-    [plannerSettings.appleIcsUrl, tasks, importedIcsTasks],
+  const days = useMemo(
+    () => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)),
+    [weekStart],
   );
+  const meetings = useMemo(() => tasks.filter(isPlannerMeetingTask), [tasks]);
   const slots = useMemo(
     () => buildPlannerSlots(plannerSettings, meetings, days),
     [plannerSettings, meetings, days],
   );
-  const icsHttpsUrl = useMemo(() => buildPlannerIcsUrl(plannerSettings.token, "https"), [plannerSettings.token]);
-  const icsWebcalUrl = useMemo(() => buildPlannerIcsUrl(plannerSettings.token, "webcal"), [plannerSettings.token]);
-  const subscriptionUrlWarning = useMemo(() => plannerSubscriptionWarning(icsHttpsUrl), [icsHttpsUrl]);
-
-  const loadImportedEvents = useCallback(async (token: string, icsUrl?: string) => {
-    if (!token) {
-      setImportedIcsTasks([]);
-      return [];
-    }
-
-    const params = new URLSearchParams({ token });
-    if (icsUrl?.trim()) params.set("icsUrl", icsUrl.trim());
-
-    const response = await fetch(
-      `/api/planner/imported-events?${params.toString()}`,
-      { headers: { accept: "application/json" } },
-    );
-
-    if (!response.ok) throw new Error(await response.text());
-
-    const payload = (await response.json()) as { events?: ImportedPlannerEvent[] };
-    const importedTasks = (payload.events ?? []).map(importedPlannerEventToTask);
-    setImportedIcsTasks(importedTasks);
-    return importedTasks;
-  }, []);
+  const icsHttpsUrl = useMemo(
+    () => buildPlannerIcsUrl(plannerSettings.token, "https"),
+    [plannerSettings.token],
+  );
+  const icsWebcalUrl = useMemo(
+    () => buildPlannerIcsUrl(plannerSettings.token, "webcal"),
+    [plannerSettings.token],
+  );
+  const subscriptionUrlWarning = useMemo(
+    () => plannerSubscriptionWarning(icsHttpsUrl),
+    [icsHttpsUrl],
+  );
 
   useEffect(() => {
     if (!user?.id) return;
@@ -203,41 +186,6 @@ function PlannerPage() {
       });
   }, [user?.id, refreshTasks]);
 
-  useEffect(() => {
-    if (!plannerSettings.token) {
-      setImportedIcsTasks([]);
-      return;
-    }
-
-    let cancelled = false;
-
-    const refreshImportedEvents = async () => {
-      try {
-        const importedTasks = await loadImportedEvents(plannerSettings.token);
-        if (cancelled) return;
-        setImportedIcsTasks(importedTasks);
-        if (plannerSettings.token !== focusedImportToken) {
-          focusPlannerWeekOnImportedTasks(importedTasks, setWeekStart);
-          setFocusedImportToken(plannerSettings.token);
-        }
-      } catch (error) {
-        console.warn("[Planner ICS Import] failed", error);
-        if (!cancelled) setImportedIcsTasks([]);
-      }
-    };
-
-    void refreshImportedEvents();
-    const interval = window.setInterval(refreshImportedEvents, 60_000);
-    const handleFocus = () => void refreshImportedEvents();
-    window.addEventListener("focus", handleFocus);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", handleFocus);
-    };
-  }, [plannerSettings.token, importedIcsRefreshKey, loadImportedEvents, focusedImportToken]);
-
   const tasksByDay = useMemo(() => {
     const map = new Map<string, Task[]>();
     for (const day of days) map.set(format(day, "yyyy-MM-dd"), []);
@@ -281,6 +229,7 @@ function PlannerPage() {
 
     setSettingsSaving(true);
     try {
+      validateAppleCalendarUrl(plannerSettings.appleIcsUrl);
       const { data, error } = await supabase
         .from("planner_settings")
         .upsert(plannerSettingsToRow(user.id, plannerSettings), { onConflict: "user_id" })
@@ -290,14 +239,10 @@ function PlannerPage() {
       if (error) throw error;
       const savedSettings = plannerSettingsFromRow(data);
       setPlannerSettings(savedSettings);
-
-      const importedTasks = await loadImportedEvents(savedSettings.token, savedSettings.appleIcsUrl);
-      focusPlannerWeekOnImportedTasks(importedTasks, setWeekStart);
-      setImportedIcsRefreshKey((value) => value + 1);
       toast.success(
-        importedTasks.length
-          ? `Planner connected. ${importedTasks.length} ICS events added.`
-          : "Planner settings saved. No dated ICS events found.",
+        savedSettings.appleIcsUrl.trim()
+          ? "Apple Calendar URL saved. Use the WEBCAL link for live subscription updates."
+          : "Planner settings saved. Copy the WEBCAL link to subscribe in Apple Calendar.",
       );
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Planner settings save failed");
@@ -324,7 +269,6 @@ function PlannerPage() {
 
       if (error) throw error;
       setPlannerSettings(plannerSettingsFromRow(data));
-      setImportedIcsRefreshKey((value) => value + 1);
       toast.success("Planner token rotated in Supabase");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Planner token update failed");
@@ -339,15 +283,15 @@ function PlannerPage() {
   };
 
   const exportIcs = () => {
-    const ics = buildIcsContent(meetings);
-    const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
+    if (!icsHttpsUrl) {
+      toast.error("Planner subscription token is not ready");
+      return;
+    }
     const link = document.createElement("a");
-    link.href = url;
-    link.download = "governance-planner.ics";
+    link.href = icsHttpsUrl;
+    link.download = "planner.ics";
     link.click();
-    URL.revokeObjectURL(url);
-    toast.success("ICS file exported");
+    toast.success("Live ICS feed downloaded");
   };
 
   const copyDayMessage = async () => {
@@ -357,7 +301,10 @@ function PlannerPage() {
       `Governance Planner - ${format(new Date(), "dd MMM yyyy")}`,
       "",
       ...(todaysTasks.length
-        ? todaysTasks.map((task, index) => `${index + 1}. ${task.title}${task.due_time ? ` at ${toDisplayTime(task.due_time)}` : ""}`)
+        ? todaysTasks.map(
+            (task, index) =>
+              `${index + 1}. ${task.title}${task.due_time ? ` at ${toDisplayTime(task.due_time)}` : ""}`,
+          )
         : ["No planner events scheduled today."]),
     ].join("\n");
     await copyText("Day message", message);
@@ -369,25 +316,50 @@ function PlannerPage() {
         <div>
           <h2 className="text-3xl font-semibold tracking-tight">Weekly Planner</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            {format(weekStart, "d MMM")} - {format(addDays(weekStart, 6), "d MMM yyyy")} · 30 min slots · 15 min breaks
+            {format(weekStart, "d MMM")} - {format(addDays(weekStart, 6), "d MMM yyyy")} · 30 min
+            slots · 15 min breaks
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => setWeekStart(startOfWeek(new Date(), { weekStartsOn: 1 }))}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setWeekStart(startOfWeek(new Date(), { weekStartsOn: 1 }))}
+          >
             Today
           </Button>
-          <Button variant="ghost" size="icon" aria-label="Previous week" onClick={() => setWeekStart(addDays(weekStart, -7))}>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Previous week"
+            onClick={() => setWeekStart(addDays(weekStart, -7))}
+          >
             <ChevronLeft className="h-4 w-4" />
           </Button>
-          <Button variant="ghost" size="icon" aria-label="Next week" onClick={() => setWeekStart(addDays(weekStart, 7))}>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Next week"
+            onClick={() => setWeekStart(addDays(weekStart, 7))}
+          >
             <ChevronRight className="h-4 w-4" />
           </Button>
-          <Button variant="outline" size="sm" className="bg-info/10 text-info hover:bg-info/15 hover:text-info" onClick={exportIcs}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="bg-info/10 text-info hover:bg-info/15 hover:text-info"
+            onClick={exportIcs}
+          >
             <Link2 className="h-4 w-4" />
             Download ICS
           </Button>
-          <Button variant="outline" size="sm" className="bg-success/10 text-success hover:bg-success/15 hover:text-success" onClick={copyDayMessage}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="bg-success/10 text-success hover:bg-success/15 hover:text-success"
+            onClick={copyDayMessage}
+          >
             <MessageCircle className="h-4 w-4" />
             Day Message
           </Button>
@@ -397,12 +369,16 @@ function PlannerPage() {
             aria-label="Refresh planner"
             onClick={() => {
               void refreshTasks();
-              setImportedIcsRefreshKey((value) => value + 1);
             }}
           >
             <RefreshCw className="h-4 w-4" />
           </Button>
-          <Button variant="outline" size="sm" className="bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary" onClick={() => setShowSettings((value) => !value)}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary"
+            onClick={() => setShowSettings((value) => !value)}
+          >
             <Settings className="h-4 w-4" />
             Settings
           </Button>
@@ -442,7 +418,9 @@ function PlannerPage() {
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                   {format(day, "EEE")}
                 </div>
-                <div className={cn("mt-1 text-xl font-semibold", today && "text-primary")}>{format(day, "d")}</div>
+                <div className={cn("mt-1 text-xl font-semibold", today && "text-primary")}>
+                  {format(day, "d")}
+                </div>
               </div>
             );
           })}
@@ -475,7 +453,9 @@ function PlannerPage() {
                       >
                         <div className="flex items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground">
                           <span>{slot.range}</span>
-                          {!showTask && <span className="text-muted-foreground/45">Draft Slot</span>}
+                          {!showTask && (
+                            <span className="text-muted-foreground/45">Draft Slot</span>
+                          )}
                         </div>
                         {showTask && task ? (
                           <div className="mt-2 rounded-md bg-primary/20 p-2 text-primary">
@@ -484,7 +464,9 @@ function PlannerPage() {
                               <div className="min-w-0">
                                 <p className="truncate text-xs font-semibold">{task.title}</p>
                                 <p className="mt-1 text-[11px] text-primary/80">
-                                  {task.status === "blocked" ? "Meeting - Cancelled" : "Meeting - Confirmed"}
+                                  {task.status === "blocked"
+                                    ? "Meeting - Cancelled"
+                                    : "Meeting - Confirmed"}
                                 </p>
                                 <p className="text-[11px] text-primary/80">
                                   Time: {task.due_time ? toDisplayTime(task.due_time) : "All day"}
@@ -495,12 +477,18 @@ function PlannerPage() {
                               </div>
                             </div>
                             <div className="mt-2 flex flex-wrap gap-1">
-                              <Badge className="h-5 bg-primary text-primary-foreground hover:bg-primary">WhatsApp</Badge>
-                              <Badge variant="destructive" className="h-5">!</Badge>
+                              <Badge className="h-5 bg-primary text-primary-foreground hover:bg-primary">
+                                WhatsApp
+                              </Badge>
+                              <Badge variant="destructive" className="h-5">
+                                !
+                              </Badge>
                             </div>
                           </div>
                         ) : (
-                          <p className="mt-1 text-[11px] font-medium text-foreground">{slot.label}</p>
+                          <p className="mt-1 text-[11px] font-medium text-foreground">
+                            {slot.label}
+                          </p>
                         )}
                       </button>
                     );
@@ -547,24 +535,61 @@ function PlannerSettingsPanel({
   onRotate: () => void | Promise<void>;
   saving: boolean;
 }) {
-  const update = (key: keyof PlannerSettings, value: string) => onChange({ ...settings, [key]: value });
+  const update = (key: keyof PlannerSettings, value: string) =>
+    onChange({ ...settings, [key]: value });
 
   return (
     <section className="min-w-0 rounded-lg border bg-card p-4 shadow-elevated sm:p-5">
       <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[repeat(6,minmax(110px,1fr))_minmax(240px,2fr)]">
-        <PlannerSettingInput label="Day Start" type="time" value={settings.dayStart} onChange={(value) => update("dayStart", value)} />
-        <PlannerSettingInput label="Day End" type="time" value={settings.dayEnd} onChange={(value) => update("dayEnd", value)} />
-        <PlannerSettingInput label="Slot (Min)" type="number" value={settings.slotMin} onChange={(value) => update("slotMin", value)} />
-        <PlannerSettingInput label="Gap (Min)" type="number" value={settings.gapMin} onChange={(value) => update("gapMin", value)} />
-        <PlannerSettingInput label="Lunch Start" type="time" value={settings.lunchStart} onChange={(value) => update("lunchStart", value)} />
-        <PlannerSettingInput label="Lunch End" type="time" value={settings.lunchEnd} onChange={(value) => update("lunchEnd", value)} />
+        <PlannerSettingInput
+          label="Day Start"
+          type="time"
+          value={settings.dayStart}
+          onChange={(value) => update("dayStart", value)}
+        />
+        <PlannerSettingInput
+          label="Day End"
+          type="time"
+          value={settings.dayEnd}
+          onChange={(value) => update("dayEnd", value)}
+        />
+        <PlannerSettingInput
+          label="Slot (Min)"
+          type="number"
+          value={settings.slotMin}
+          onChange={(value) => update("slotMin", value)}
+        />
+        <PlannerSettingInput
+          label="Gap (Min)"
+          type="number"
+          value={settings.gapMin}
+          onChange={(value) => update("gapMin", value)}
+        />
+        <PlannerSettingInput
+          label="Lunch Start"
+          type="time"
+          value={settings.lunchStart}
+          onChange={(value) => update("lunchStart", value)}
+        />
+        <PlannerSettingInput
+          label="Lunch End"
+          type="time"
+          value={settings.lunchEnd}
+          onChange={(value) => update("lunchEnd", value)}
+        />
         <div className="min-w-0 sm:col-span-2 lg:col-span-3 2xl:col-span-1">
-          <PlannerSettingInput label="Apple ICS URL" value={settings.appleIcsUrl} onChange={(value) => update("appleIcsUrl", value)} />
+          <PlannerSettingInput
+            label="Apple ICS URL"
+            value={settings.appleIcsUrl}
+            onChange={(value) => update("appleIcsUrl", value)}
+          />
         </div>
       </div>
 
       <div className="mt-4 flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-        <Button className="w-full sm:w-auto" onClick={onSave} disabled={saving}>{saving ? "Saving..." : "Save Settings"}</Button>
+        <Button className="w-full sm:w-auto" onClick={onSave} disabled={saving}>
+          {saving ? "Saving..." : "Save Settings"}
+        </Button>
         <p className="min-w-0 text-sm text-muted-foreground">
           Default: 10:00-18:00, 30 min slots, 15 min break, lunch 13:30-14:30.
         </p>
@@ -572,24 +597,56 @@ function PlannerSettingsPanel({
 
       <div className="mt-4 grid min-w-0 gap-4 lg:grid-cols-2">
         <div className="min-w-0 rounded-lg border border-success/30 bg-success/5 p-4">
-          <p className="text-xs font-bold uppercase tracking-wide text-success">Dashboard to Apple (HTTPS)</p>
-          <Input className="mt-2 min-w-0 bg-background text-xs sm:text-sm" value={httpsUrl} readOnly />
+          <p className="text-xs font-bold uppercase tracking-wide text-success">
+            Dashboard to Apple (HTTPS)
+          </p>
+          <Input
+            className="mt-2 min-w-0 bg-background text-xs sm:text-sm"
+            value={httpsUrl}
+            readOnly
+          />
           {subscriptionUrlWarning && (
             <p className="mt-2 text-xs font-medium text-destructive">{subscriptionUrlWarning}</p>
           )}
           <div className="mt-3 grid gap-2 sm:flex sm:flex-wrap">
-            <Button size="sm" className="w-full bg-success text-success-foreground hover:bg-success/90 sm:w-auto" disabled={!httpsUrl} onClick={() => onCopy("HTTPS ICS URL", httpsUrl)}>
+            <Button
+              size="sm"
+              className="w-full bg-success text-success-foreground hover:bg-success/90 sm:w-auto"
+              disabled={!httpsUrl}
+              onClick={() => onCopy("HTTPS ICS URL", httpsUrl)}
+            >
               Copy HTTPS
             </Button>
-            <Button size="sm" variant="outline" className="w-full sm:w-auto" disabled={saving} onClick={onRotate}>Rotate Token</Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-full sm:w-auto"
+              disabled={saving}
+              onClick={onRotate}
+            >
+              Rotate Token
+            </Button>
           </div>
         </div>
 
         <div className="min-w-0 rounded-lg border border-primary/25 bg-primary/5 p-4">
-          <p className="text-xs font-bold uppercase tracking-wide text-primary">Apple Subscription (WEBCAL)</p>
-          <Input className="mt-2 min-w-0 bg-background text-xs sm:text-sm" value={webcalUrl} readOnly />
+          <p className="text-xs font-bold uppercase tracking-wide text-primary">
+            Apple Subscription (WEBCAL)
+          </p>
+          <Input
+            className="mt-2 min-w-0 bg-background text-xs sm:text-sm"
+            value={webcalUrl}
+            readOnly
+          />
           <div className="mt-3 grid gap-2 sm:flex sm:flex-wrap">
-            <Button size="sm" className="w-full sm:w-auto" disabled={!webcalUrl} onClick={() => onCopy("WEBCAL URL", webcalUrl)}>Copy WEBCAL</Button>
+            <Button
+              size="sm"
+              className="w-full sm:w-auto"
+              disabled={!webcalUrl}
+              onClick={() => onCopy("WEBCAL URL", webcalUrl)}
+            >
+              Copy WEBCAL
+            </Button>
           </div>
         </div>
       </div>
@@ -611,7 +668,12 @@ function PlannerSettingInput({
   return (
     <div className="min-w-0 space-y-1.5">
       <FieldLabel>{label}</FieldLabel>
-      <Input type={type} value={value} onChange={(event) => onChange(event.target.value)} className="min-w-0 bg-background" />
+      <Input
+        type={type}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="min-w-0 bg-background"
+      />
     </div>
   );
 }
@@ -685,7 +747,9 @@ function EventDialog({
       form.venue ? `Venue: ${form.venue}` : "",
       form.attendees ? `Attendees: ${form.attendees}` : "",
       form.color ? `Color: ${form.color.replace("bg-", "")}` : "",
-    ].filter(Boolean).join("\n");
+    ]
+      .filter(Boolean)
+      .join("\n");
 
     const payload = {
       title,
@@ -694,7 +758,12 @@ function EventDialog({
       due_date: scheduledDate,
       due_time: dueTime || null,
       department: form.department === "None" ? null : form.department,
-      status: form.status === "Cancelled" ? "blocked" as const : form.status === "Confirmed" ? "in_progress" as const : "todo" as const,
+      status:
+        form.status === "Cancelled"
+          ? ("blocked" as const)
+          : form.status === "Confirmed"
+            ? ("in_progress" as const)
+            : ("todo" as const),
       priority: "medium" as const,
       calendar_sync_enabled: form.calendar_sync_enabled,
     };
@@ -703,7 +772,8 @@ function EventDialog({
     try {
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
       if (sessionError) throw sessionError;
-      if (!sessionData.session?.user.id) throw new Error("Please sign in before saving planner events.");
+      if (!sessionData.session?.user.id)
+        throw new Error("Please sign in before saving planner events.");
 
       const savedTask = await savePlannerTask(
         isEditMode ? event.id : null,
@@ -720,7 +790,7 @@ function EventDialog({
           const connected = await isGoogleCalendarConnected(sessionData.session.user.id);
           if (!connected) {
             window.localStorage.setItem(pendingPlannerGoogleSyncKey, savedTask.id);
-          toast.message("Event created. Connect Google Calendar to finish sync.");
+            toast.message("Event created. Connect Google Calendar to finish sync.");
             await requestGoogleCalendarConnection(window.location.href);
             return;
           }
@@ -751,8 +821,12 @@ function EventDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="overflow-hidden border-0 bg-muted p-0 shadow-2xl sm:max-w-md">
         <DialogHeader className="px-5 pt-5">
-          <DialogTitle className="text-xl">{isEditMode ? "Edit Meeting" : "New Meeting"}</DialogTitle>
-          <DialogDescription className="sr-only">Create or edit planner meeting details.</DialogDescription>
+          <DialogTitle className="text-xl">
+            {isEditMode ? "Edit Meeting" : "New Meeting"}
+          </DialogTitle>
+          <DialogDescription className="sr-only">
+            Create or edit planner meeting details.
+          </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={submit} className="space-y-4 px-5 pb-5">
@@ -770,16 +844,33 @@ function EventDialog({
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-1.5">
               <FieldLabel htmlFor="event-date">Date</FieldLabel>
-              <Input id="event-date" type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="bg-background" />
+              <Input
+                id="event-date"
+                type="date"
+                value={form.date}
+                onChange={(e) => setForm({ ...form, date: e.target.value })}
+                className="bg-background"
+              />
             </div>
             <div className="space-y-1.5">
               <FieldLabel htmlFor="event-time">Time</FieldLabel>
-              <Input id="event-time" type="time" value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} className="bg-background" />
+              <Input
+                id="event-time"
+                type="time"
+                value={form.time}
+                onChange={(e) => setForm({ ...form, time: e.target.value })}
+                className="bg-background"
+              />
             </div>
             <div className="space-y-1.5">
               <FieldLabel>Duration</FieldLabel>
-              <Select value={form.duration} onValueChange={(value) => setForm({ ...form, duration: value })}>
-                <SelectTrigger className="bg-background"><SelectValue /></SelectTrigger>
+              <Select
+                value={form.duration}
+                onValueChange={(value) => setForm({ ...form, duration: value })}
+              >
+                <SelectTrigger className="bg-background">
+                  <SelectValue />
+                </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="15m">15m</SelectItem>
                   <SelectItem value="30m">30m</SelectItem>
@@ -794,8 +885,13 @@ function EventDialog({
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <FieldLabel>Status</FieldLabel>
-              <Select value={form.status} onValueChange={(value) => setForm({ ...form, status: value })}>
-                <SelectTrigger className="bg-background"><SelectValue /></SelectTrigger>
+              <Select
+                value={form.status}
+                onValueChange={(value) => setForm({ ...form, status: value })}
+              >
+                <SelectTrigger className="bg-background">
+                  <SelectValue />
+                </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="Confirmed">Confirmed</SelectItem>
                   <SelectItem value="Tentative">Tentative</SelectItem>
@@ -812,7 +908,11 @@ function EventDialog({
                     type="button"
                     aria-label={color}
                     onClick={() => setForm({ ...form, color })}
-                    className={cn("h-6 w-4 rounded-full ring-offset-2", color, form.color === color && "ring-2 ring-primary")}
+                    className={cn(
+                      "h-6 w-4 rounded-full ring-offset-2",
+                      color,
+                      form.color === color && "ring-2 ring-primary",
+                    )}
                   />
                 ))}
               </div>
@@ -822,8 +922,13 @@ function EventDialog({
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <FieldLabel>Department (Optional)</FieldLabel>
-              <Select value={form.department} onValueChange={(value) => setForm({ ...form, department: value })}>
-                <SelectTrigger className="bg-background"><SelectValue /></SelectTrigger>
+              <Select
+                value={form.department}
+                onValueChange={(value) => setForm({ ...form, department: value })}
+              >
+                <SelectTrigger className="bg-background">
+                  <SelectValue />
+                </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="None">None</SelectItem>
                   {departments.map((department) => (
@@ -836,13 +941,25 @@ function EventDialog({
             </div>
             <div className="space-y-1.5">
               <FieldLabel htmlFor="event-venue">Venue</FieldLabel>
-              <Input id="event-venue" value={form.venue} onChange={(e) => setForm({ ...form, venue: e.target.value })} placeholder="Meeting room" className="bg-background" />
+              <Input
+                id="event-venue"
+                value={form.venue}
+                onChange={(e) => setForm({ ...form, venue: e.target.value })}
+                placeholder="Meeting room"
+                className="bg-background"
+              />
             </div>
           </div>
 
           <div className="space-y-1.5">
             <FieldLabel htmlFor="event-attendees">Attendees</FieldLabel>
-            <Input id="event-attendees" value={form.attendees} onChange={(e) => setForm({ ...form, attendees: e.target.value })} placeholder="Comma separated names" className="bg-background" />
+            <Input
+              id="event-attendees"
+              value={form.attendees}
+              onChange={(e) => setForm({ ...form, attendees: e.target.value })}
+              placeholder="Comma separated names"
+              className="bg-background"
+            />
           </div>
 
           <div className="space-y-1.5">
@@ -860,7 +977,9 @@ function EventDialog({
           <label className="flex cursor-pointer items-center gap-3 rounded-lg border bg-background px-3 py-3 text-sm font-medium shadow-sm">
             <Checkbox
               checked={form.calendar_sync_enabled}
-              onCheckedChange={(checked) => setForm({ ...form, calendar_sync_enabled: checked === true })}
+              onCheckedChange={(checked) =>
+                setForm({ ...form, calendar_sync_enabled: checked === true })
+              }
             />
             <span className="flex items-center gap-2">
               <CalendarDays className="h-4 w-4 text-primary" />
@@ -884,7 +1003,10 @@ function EventDialog({
 
 function FieldLabel({ children, htmlFor }: { children: React.ReactNode; htmlFor?: string }) {
   return (
-    <Label htmlFor={htmlFor} className="text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+    <Label
+      htmlFor={htmlFor}
+      className="text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground"
+    >
       {children}
     </Label>
   );
@@ -898,47 +1020,10 @@ type PlannerSettingsRow = {
   lunch_start: string;
   lunch_end: string;
   apple_ics_url: string;
+  apple_calendar_url?: string | null;
   subscription_token: string;
+  ics_token?: string | null;
 };
-
-type ImportedPlannerEvent = {
-  id: string;
-  title: string | null;
-  description: string | null;
-  department: string | null;
-  scheduled_date: string | null;
-  due_date: string | null;
-  due_time: string | null;
-  updated_at: string | null;
-  created_at: string | null;
-  status: string | null;
-};
-
-function importedPlannerEventToTask(event: ImportedPlannerEvent): Task {
-  return {
-    id: event.id,
-    title: event.title || "Imported calendar event",
-    description: event.description,
-    department: event.department,
-    scheduled_date: event.scheduled_date,
-    due_date: event.due_date,
-    due_time: event.due_time,
-    status: event.status === "blocked" ? "blocked" : "in_progress",
-    priority: "medium",
-    created_by: "ics-import",
-    created_at: event.created_at ?? new Date(0).toISOString(),
-    updated_at: event.updated_at ?? event.created_at ?? new Date(0).toISOString(),
-    assignee_id: null,
-    completed_at: null,
-    calendar_event_html_link: null,
-    calendar_last_synced_at: null,
-    calendar_retry_count: 0,
-    calendar_sync_enabled: false,
-    calendar_sync_error: null,
-    calendar_sync_status: "not_synced",
-    google_calendar_event_id: null,
-  };
-}
 
 function plannerSettingsFromRow(row: PlannerSettingsRow): PlannerSettings {
   return {
@@ -948,12 +1033,13 @@ function plannerSettingsFromRow(row: PlannerSettingsRow): PlannerSettings {
     gapMin: String(row.gap_min),
     lunchStart: timeInputValue(row.lunch_start),
     lunchEnd: timeInputValue(row.lunch_end),
-    appleIcsUrl: row.apple_ics_url ?? "",
-    token: row.subscription_token,
+    appleIcsUrl: row.apple_calendar_url ?? row.apple_ics_url ?? "",
+    token: row.ics_token ?? row.subscription_token,
   };
 }
 
 function plannerSettingsToRow(userId: string, settings: PlannerSettings) {
+  const token = settings.token || createPlannerToken();
   return {
     user_id: userId,
     day_start: settings.dayStart || defaultPlannerSettings.dayStart,
@@ -963,7 +1049,7 @@ function plannerSettingsToRow(userId: string, settings: PlannerSettings) {
     lunch_start: settings.lunchStart || defaultPlannerSettings.lunchStart,
     lunch_end: settings.lunchEnd || defaultPlannerSettings.lunchEnd,
     apple_ics_url: settings.appleIcsUrl,
-    subscription_token: settings.token || createPlannerToken(),
+    subscription_token: token,
   };
 }
 
@@ -976,12 +1062,17 @@ function createPlannerToken() {
   if (typeof crypto !== "undefined" && crypto.getRandomValues) {
     crypto.getRandomValues(bytes);
   } else {
-    for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+    for (let index = 0; index < bytes.length; index += 1)
+      bytes[index] = Math.floor(Math.random() * 256);
   }
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function buildPlannerSlots(settings: PlannerSettings, tasks: Task[] = [], days: Date[] = []): PlannerSlot[] {
+function buildPlannerSlots(
+  settings: PlannerSettings,
+  tasks: Task[] = [],
+  days: Date[] = [],
+): PlannerSlot[] {
   const slots: PlannerSlot[] = [];
   const slotMin = Math.max(5, Number(settings.slotMin) || 30);
   const gapMin = Math.max(0, Number(settings.gapMin) || 0);
@@ -1004,7 +1095,11 @@ function buildPlannerSlots(settings: PlannerSettings, tasks: Task[] = [], days: 
 
   while (cursor < end) {
     if (cursor === lunchStart && lunchEnd > lunchStart) {
-      slots.push({ range: `${timeFromMinutes(lunchStart)} - ${timeFromMinutes(lunchEnd)}`, label: "Lunch Break", tall: true });
+      slots.push({
+        range: `${timeFromMinutes(lunchStart)} - ${timeFromMinutes(lunchEnd)}`,
+        label: "Lunch Break",
+        tall: true,
+      });
       cursor = lunchEnd;
       continue;
     }
@@ -1016,13 +1111,19 @@ function buildPlannerSlots(settings: PlannerSettings, tasks: Task[] = [], days: 
 
     const slotEnd = Math.min(cursor + slotMin, end);
     if (slotEnd > cursor) {
-      slots.push({ range: `${timeFromMinutes(cursor)} - ${timeFromMinutes(slotEnd)}`, label: null });
+      slots.push({
+        range: `${timeFromMinutes(cursor)} - ${timeFromMinutes(slotEnd)}`,
+        label: null,
+      });
     }
     cursor = slotEnd;
 
     if (gapMin > 0 && cursor < end && !(cursor >= lunchStart && cursor < lunchEnd)) {
       const breakEnd = Math.min(cursor + gapMin, end);
-      slots.push({ range: `${timeFromMinutes(cursor)} - ${timeFromMinutes(breakEnd)}`, label: `${gapMin}M BREAK` });
+      slots.push({
+        range: `${timeFromMinutes(cursor)} - ${timeFromMinutes(breakEnd)}`,
+        label: `${gapMin}M BREAK`,
+      });
       cursor = breakEnd;
     }
   }
@@ -1070,6 +1171,22 @@ function plannerSubscriptionWarning(urlText: string) {
     return "Calendar subscription URL is invalid.";
   }
   return "";
+}
+
+function validateAppleCalendarUrl(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return;
+
+  try {
+    const url = new URL(trimmed.replace(/^webcal:/i, "https:"));
+    if (!["https:", "http:"].includes(url.protocol)) {
+      throw new Error("Apple Calendar URL must be an HTTPS or WEBCAL URL.");
+    }
+  } catch {
+    throw new Error(
+      "Apple Calendar URL is invalid. Leave it blank or paste a valid HTTPS/WEBCAL URL.",
+    );
+  }
 }
 
 function isPrivatePlannerHost(hostname: string) {
@@ -1122,18 +1239,6 @@ function roundUpMinutes(value: number, step: number) {
   return Math.ceil(value / step) * step;
 }
 
-function focusPlannerWeekOnImportedTasks(tasks: Task[], setWeekStart: (date: Date) => void) {
-  const dates = tasks
-    .map(dateKeyForTask)
-    .filter((date): date is string => !!date && /^\d{4}-\d{2}-\d{2}$/.test(date))
-    .sort();
-  if (!dates.length) return;
-
-  const today = format(new Date(), "yyyy-MM-dd");
-  const targetDate = dates.find((date) => date >= today) ?? dates[dates.length - 1];
-  setWeekStart(startOfWeek(parseISO(targetDate), { weekStartsOn: 1 }));
-}
-
 async function savePlannerTask(
   id: string | null,
   payload: {
@@ -1154,7 +1259,7 @@ async function savePlannerTask(
     const response = await fetch("/api/planner/tasks", {
       method: id ? "PUT" : "POST",
       headers: {
-        "authorization": `Bearer ${accessToken}`,
+        authorization: `Bearer ${accessToken}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({ id, ...payload }),
@@ -1170,20 +1275,100 @@ async function savePlannerTask(
       return result.task;
     }
   } catch (error) {
-    if (error instanceof Error && !/Failed to fetch|Load failed|NetworkError/i.test(error.message)) {
+    if (
+      error instanceof Error &&
+      !/Failed to fetch|Load failed|NetworkError/i.test(error.message)
+    ) {
       throw error;
     }
     console.warn("[Planner Event Save] server API request failed, using Supabase fallback", error);
   }
 
   const result = id
-    ? await supabase.from("tasks").update(payload).eq("id", id).select("id").single()
-    : await supabase.from("tasks").insert({ ...payload, created_by: currentUserId }).select("id").single();
+    ? await savePlannerEventFallback(id, payload, currentUserId)
+    : await savePlannerEventFallback(null, payload, currentUserId);
 
   if (result.error) throw result.error;
   if (!result.data?.id) throw new Error("Event save did not return an id.");
 
   return result.data;
+}
+
+async function savePlannerEventFallback(
+  id: string | null,
+  payload: {
+    title: string;
+    description: string | null;
+    scheduled_date: string;
+    due_date: string;
+    due_time: string | null;
+    department: string | null;
+    status: Task["status"];
+    priority: Task["priority"];
+    calendar_sync_enabled: boolean;
+  },
+  currentUserId: string,
+) {
+  const result = id
+    ? await supabase
+        .from("planner_events")
+        .update(plannerEventPayload(payload))
+        .eq("id", id)
+        .select("id")
+        .single()
+    : await supabase
+        .from("planner_events")
+        .insert({ ...plannerEventPayload(payload), user_id: currentUserId })
+        .select("id")
+        .single();
+
+  if (!result.error || !isPlannerEventsTableUnavailable(result.error)) return result;
+
+  return id
+    ? supabase.from("tasks").update(payload).eq("id", id).select("id").single()
+    : supabase
+        .from("tasks")
+        .insert({ ...payload, created_by: currentUserId })
+        .select("id")
+        .single();
+}
+
+function isPlannerEventsTableUnavailable(error: { code?: string; message?: string }) {
+  const message = error.message ?? "";
+  return error.code === "42P01" || /planner_events/i.test(message) || /schema cache/i.test(message);
+}
+
+function plannerEventPayload(payload: {
+  title: string;
+  description: string | null;
+  scheduled_date: string;
+  due_time: string | null;
+  department: string | null;
+  status: Task["status"];
+  priority: Task["priority"];
+}) {
+  const startTime = payload.due_time ? toTimeInput(payload.due_time) : null;
+  const duration = extractDurationMinutes(payload.description) ?? 30;
+  return {
+    title: payload.title,
+    description: payload.description,
+    location: extractDescriptionField(payload.description, "Venue") ?? payload.department,
+    date: payload.scheduled_date,
+    start_time: startTime,
+    end_time: startTime ? timeFromMinutes(minutesFromTime(startTime) + duration) : null,
+    is_all_day: !startTime,
+    status: plannerEventStatus(payload.status, payload.description),
+    priority: payload.priority,
+    color: extractDescriptionField(payload.description, "Color"),
+  };
+}
+
+function plannerEventStatus(status: Task["status"], description: string | null) {
+  const formStatus = extractDescriptionField(description, "Status")?.toLowerCase();
+  if (status === "blocked" || formStatus === "cancelled") return "cancelled";
+  if (status === "done") return "completed";
+  if (status === "todo" || formStatus === "tentative") return "tentative";
+  return "confirmed";
 }
 
 async function isGoogleCalendarConnected(userId: string) {
@@ -1201,54 +1386,32 @@ async function isGoogleCalendarConnected(userId: string) {
   return !!data;
 }
 
-function buildIcsContent(tasks: Task[]) {
-  const lines = [
-    "BEGIN:VCALENDAR",
-    "VERSION:2.0",
-    "PRODID:-//Governance Review Dashboard//Planner//EN",
-    "CALSCALE:GREGORIAN",
-    "METHOD:PUBLISH",
-    ...tasks
-      .filter((task) => task.scheduled_date || task.due_date)
-      .flatMap((task) => {
-        const date = task.scheduled_date ?? task.due_date ?? format(new Date(), "yyyy-MM-dd");
-        const time = task.due_time ?? "10:00";
-        const start = new Date(`${date}T${time}:00+05:30`);
-        const end = new Date(start.getTime() + 30 * 60 * 1000);
-        return [
-          "BEGIN:VEVENT",
-          `UID:${task.id}@governance-review-dashboard`,
-          `DTSTAMP:${toIcsDateTime(new Date())}`,
-          `DTSTART:${toIcsDateTime(start)}`,
-          `DTEND:${toIcsDateTime(end)}`,
-          `SUMMARY:${escapeIcs(task.title)}`,
-          `DESCRIPTION:${escapeIcs(task.description ?? "")}`,
-          task.department ? `LOCATION:${escapeIcs(task.department)}` : "",
-          "END:VEVENT",
-        ].filter(Boolean);
-      }),
-    "END:VCALENDAR",
-  ];
-  return `${lines.join("\r\n")}\r\n`;
-}
-
 function minutesFromTime(value: string) {
   const [hour = "0", minute = "0"] = value.split(":");
   return Number(hour) * 60 + Number(minute);
 }
 
 function timeFromMinutes(value: number) {
-  const hour = Math.floor(value / 60);
-  const minute = value % 60;
+  const minuteOfDay = ((value % 1440) + 1440) % 1440;
+  const hour = Math.floor(minuteOfDay / 60);
+  const minute = minuteOfDay % 60;
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
-function toIcsDateTime(date: Date) {
-  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+function extractDurationMinutes(description: string | null | undefined) {
+  const duration = extractDescriptionField(description, "Duration");
+  if (!duration) return null;
+  const match = duration.match(/^(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours)$/i);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return match[2].toLowerCase().startsWith("h") ? amount * 60 : amount;
 }
 
-function escapeIcs(value: string) {
-  return value.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/,/g, "\\,").replace(/;/g, "\\;");
+function extractDescriptionField(description: string | null | undefined, field: string) {
+  const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = description?.match(new RegExp(`^${escapedField}:\\s*(.+)$`, "im"));
+  return match?.[1]?.trim() || null;
 }
 
 function toDisplayDate(dateKey: string) {

@@ -81,24 +81,33 @@ async function handlePlannerIcsExport(url: URL) {
     }
 
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: settings, error: settingsError } = await supabaseAdmin
+    let { data: settings, error: settingsError } = await supabaseAdmin
       .from("planner_settings")
-      .select("user_id,apple_ics_url")
+      .select("user_id")
       .eq("subscription_token", token)
       .maybeSingle();
+
+    if (!settings && !settingsError) {
+      const fallback = await supabaseAdmin
+        .from("planner_settings")
+        .select("user_id")
+        .eq("ics_token", token)
+        .maybeSingle();
+      settings = fallback.data;
+      settingsError = isPlannerSettingsTokenAliasUnavailable(fallback.error)
+        ? null
+        : fallback.error;
+    }
 
     if (settingsError) throw settingsError;
     if (!settings) {
       return new Response("Planner subscription token not found", {
-        status: 404,
+        status: 401,
         headers: { "content-type": "text/plain; charset=utf-8" },
       });
     }
 
-    const importedPlannerTasks = await fetchImportedPlannerEvents(settings.apple_ics_url);
-    const plannerTasks = importedPlannerTasks.length
-      ? importedPlannerTasks
-      : await fetchPlannerTasksForCalendar(settings.user_id);
+    const plannerTasks = await fetchPlannerTasksForCalendar(settings.user_id);
 
     if (!plannerTasks.length) {
       const diagnostic = await explainEmptyPlannerCalendar(settings.user_id);
@@ -128,7 +137,7 @@ async function handlePlannerIcsExport(url: URL) {
 }
 
 async function handlePlannerTaskSave(request: Request) {
-  if (!["POST", "PUT"].includes(request.method)) {
+  if (!["POST", "PUT", "DELETE"].includes(request.method)) {
     return new Response("Method not allowed", {
       status: 405,
       headers: { "content-type": "text/plain; charset=utf-8" },
@@ -138,8 +147,37 @@ async function handlePlannerTaskSave(request: Request) {
   try {
     const user = await authenticatedPlannerUser(request);
     const body = (await request.json()) as PlannerTaskSaveRequest;
-    const payload = plannerTaskPayload(body);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+    if (request.method === "DELETE") {
+      if (!body.id || body.id.startsWith("ics-")) {
+        return new Response("Planner event id required", {
+          status: 400,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        });
+      }
+
+      const existing = await getPlannerTaskForUser(body.id, user.id);
+      if (!existing) {
+        return new Response("Planner task not found", {
+          status: 404,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        });
+      }
+
+      const { error } = await supabaseAdmin.from("planner_events").delete().eq("id", body.id);
+      if (error) {
+        if (isPlannerEventsTableUnavailable(error)) {
+          const legacy = await supabaseAdmin.from("tasks").delete().eq("id", body.id);
+          if (legacy.error) throw legacy.error;
+          return Response.json({ ok: true }, { status: 200 });
+        }
+        throw error;
+      }
+      return Response.json({ ok: true }, { status: 200 });
+    }
+
+    const payload = plannerTaskPayload(body);
 
     const shouldUpdate = request.method === "PUT" && body.id && !body.id.startsWith("ics-");
 
@@ -153,21 +191,31 @@ async function handlePlannerTaskSave(request: Request) {
       }
 
       const { data, error } = await supabaseAdmin
-        .from("tasks")
+        .from("planner_events")
         .update(payload)
         .eq("id", body.id)
         .select(plannerTaskSelect)
         .single();
-      if (error) throw error;
+      if (error) {
+        if (isPlannerEventsTableUnavailable(error)) {
+          return saveLegacyPlannerTask(body, user.id, true);
+        }
+        throw error;
+      }
       return Response.json({ task: data }, { status: 200 });
     }
 
     const { data, error } = await supabaseAdmin
-      .from("tasks")
-      .insert({ ...payload, created_by: user.id })
+      .from("planner_events")
+      .insert({ ...payload, user_id: user.id })
       .select(plannerTaskSelect)
       .single();
-    if (error) throw error;
+    if (error) {
+      if (isPlannerEventsTableUnavailable(error)) {
+        return saveLegacyPlannerTask(body, user.id, false);
+      }
+      throw error;
+    }
     return Response.json({ task: data }, { status: 201 });
   } catch (error) {
     console.error("[Planner Task Save] failed", error);
@@ -176,6 +224,34 @@ async function handlePlannerTaskSave(request: Request) {
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   }
+}
+
+async function saveLegacyPlannerTask(
+  body: PlannerTaskSaveRequest,
+  userId: string,
+  shouldUpdate: boolean,
+) {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const payload = legacyPlannerTaskPayload(body);
+
+  if (shouldUpdate && body.id) {
+    const { data, error } = await supabaseAdmin
+      .from("tasks")
+      .update(payload)
+      .eq("id", body.id)
+      .select(legacyPlannerTaskSelect)
+      .single();
+    if (error) throw error;
+    return Response.json({ task: data }, { status: 200 });
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("tasks")
+    .insert({ ...payload, created_by: userId })
+    .select(legacyPlannerTaskSelect)
+    .single();
+  if (error) throw error;
+  return Response.json({ task: data }, { status: 201 });
 }
 
 async function handlePlannerImportedEvents(url: URL) {
@@ -219,14 +295,17 @@ type PlannerIcsTask = {
   id: string;
   title: string | null;
   description: string | null;
-  department: string | null;
+  location: string | null;
+  department?: string | null;
   scheduled_date: string | null;
   due_date: string | null;
   due_time: string | null;
+  end_time?: string | null;
+  is_all_day?: boolean | null;
   updated_at: string | null;
   created_at: string | null;
   status: string | null;
-  [key: string]: string | null;
+  [key: string]: string | boolean | null | undefined;
 };
 
 type PlannerTaskSaveRequest = {
@@ -269,11 +348,14 @@ type ImportedIcsEvent = {
 const plannerDateFields = [
   "scheduled_date",
   "due_date",
+  "date",
   "meeting_date",
   "start_date",
   "event_date",
 ] as const;
 const plannerTaskSelect =
+  "id,title,description,location,date,start_time,end_time,is_all_day,updated_at,created_at,status,priority,color,user_id";
+const legacyPlannerTaskSelect =
   "id,title,description,department,scheduled_date,due_date,due_time,updated_at,created_at,status,priority,calendar_sync_enabled,calendar_sync_status,google_calendar_event_id,calendar_event_html_link,calendar_last_synced_at,calendar_sync_error,calendar_retry_count,assignee_id,completed_at,created_by";
 
 async function authenticatedPlannerUser(request: Request): Promise<AuthenticatedPlannerUser> {
@@ -303,7 +385,31 @@ function plannerTaskPayload(body: PlannerTaskSaveRequest) {
   return {
     title,
     description: body.description?.trim() || null,
-    department: body.department?.trim() || null,
+    location: extractDescriptionField(body.description, "Venue") ?? body.department?.trim() ?? null,
+    date: scheduledDate,
+    start_time: normalizeTime(body.due_time) || null,
+    end_time: addMinutesToTime(
+      normalizeTime(body.due_time),
+      extractDurationMinutes(body.description) ?? 30,
+    ),
+    is_all_day: !normalizeTime(body.due_time),
+    status: normalizePlannerEventStatus(body.status, body.description),
+    priority: normalizeTaskPriority(body.priority),
+  };
+}
+
+function legacyPlannerTaskPayload(body: PlannerTaskSaveRequest) {
+  const title = body.title?.trim();
+  if (!title) throw new PlannerAuthError("Event title required", 400);
+
+  const scheduledDate = normalizeDateKey(body.scheduled_date) ?? normalizeDateKey(body.due_date);
+  if (!scheduledDate) throw new PlannerAuthError("Planner event date required", 400);
+
+  return {
+    title,
+    description: body.description?.trim() || null,
+    department:
+      extractDescriptionField(body.description, "Venue") ?? body.department?.trim() ?? null,
     scheduled_date: scheduledDate,
     due_date: scheduledDate,
     due_time: normalizeTime(body.due_time) || null,
@@ -316,6 +422,32 @@ function plannerTaskPayload(body: PlannerTaskSaveRequest) {
 async function getPlannerTaskForUser(taskId: string, userId: string) {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const canManageAllTasks = await userCanViewAllTasks(userId);
+  let query = supabaseAdmin
+    .from("planner_events")
+    .select("id,user_id")
+    .eq("id", taskId)
+    .maybeSingle();
+
+  if (!canManageAllTasks) {
+    query = query.eq("user_id", userId);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    if (isPlannerEventsTableUnavailable(error)) {
+      return getLegacyPlannerTaskForUser(taskId, userId, canManageAllTasks);
+    }
+    throw error;
+  }
+  return data;
+}
+
+async function getLegacyPlannerTaskForUser(
+  taskId: string,
+  userId: string,
+  canManageAllTasks: boolean,
+) {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   let query = supabaseAdmin
     .from("tasks")
     .select("id,created_by,assignee_id")
@@ -336,6 +468,17 @@ function normalizeTaskStatus(value: string | null | undefined) {
   return "in_progress";
 }
 
+function normalizePlannerEventStatus(
+  value: string | null | undefined,
+  description: string | null | undefined,
+) {
+  const plannerStatus = extractDescriptionField(description, "Status")?.toLowerCase();
+  if (value === "blocked" || plannerStatus === "cancelled") return "cancelled";
+  if (value === "done") return "completed";
+  if (value === "todo" || plannerStatus === "tentative") return "tentative";
+  return "confirmed";
+}
+
 function normalizeTaskPriority(value: string | null | undefined) {
   if (["low", "medium", "high", "urgent"].includes(value ?? "")) return value;
   return "medium";
@@ -354,8 +497,33 @@ async function fetchPlannerTaskRows(
 ): Promise<PlannerIcsTask[]> {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   let query = supabaseAdmin
-    .from("tasks")
+    .from("planner_events")
     .select(plannerTaskSelect)
+    .order("date", { ascending: true, nullsFirst: false })
+    .order("start_time", { ascending: true, nullsFirst: false });
+
+  if (!canViewAllPlannerTasks) {
+    query = query.eq("user_id", userId);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    if (isPlannerEventsTableUnavailable(error)) {
+      return fetchLegacyPlannerTaskRows(userId, canViewAllPlannerTasks);
+    }
+    throw error;
+  }
+  return (data ?? []).map(plannerEventRowToIcsTask);
+}
+
+async function fetchLegacyPlannerTaskRows(
+  userId: string,
+  canViewAllPlannerTasks: boolean,
+): Promise<PlannerIcsTask[]> {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  let query = supabaseAdmin
+    .from("tasks")
+    .select(legacyPlannerTaskSelect)
     .order("scheduled_date", { ascending: true, nullsFirst: false })
     .order("due_date", { ascending: true, nullsFirst: false });
 
@@ -367,43 +535,44 @@ async function fetchPlannerTaskRows(
 
   const { data, error } = await query;
   if (error) throw error;
-  return addDetectedPlannerDateFields(data ?? []);
+  return (data ?? []).map((row) => ({
+    ...row,
+    location: row.department,
+  }));
 }
 
-async function addDetectedPlannerDateFields(rows: PlannerIcsTask[]): Promise<PlannerIcsTask[]> {
-  if (!rows.length) return rows;
-
-  const detectedFields = await detectExtraPlannerDateFields();
-  if (!detectedFields.length) return rows;
-
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const { data, error } = await supabaseAdmin
-    .from("tasks")
-    .select(["id", ...detectedFields].join(","))
-    .in(
-      "id",
-      rows.map((row) => row.id),
-    );
-
-  if (error) return rows;
-
-  const extraDatesById = new Map((data ?? []).map((row) => [row.id, row]));
-  return rows.map((row) => ({ ...row, ...(extraDatesById.get(row.id) ?? {}) }));
+function isPlannerEventsTableUnavailable(error: { code?: string; message?: string }) {
+  const message = error.message ?? "";
+  return error.code === "42P01" || /planner_events/i.test(message) || /schema cache/i.test(message);
 }
 
-async function detectExtraPlannerDateFields() {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const extraFields = plannerDateFields.filter(
-    (field) => !["scheduled_date", "due_date"].includes(field),
-  );
-  const detectedFields: string[] = [];
+function isPlannerSettingsTokenAliasUnavailable(error: { code?: string; message?: string } | null) {
+  if (!error) return false;
+  const message = error.message ?? "";
+  return /ics_token/i.test(message) || /schema cache/i.test(message);
+}
 
-  for (const field of extraFields) {
-    const { error } = await supabaseAdmin.from("tasks").select(`id,${field}`).limit(1);
-    if (!error) detectedFields.push(field);
-  }
+function plannerEventRowToIcsTask(row: Record<string, string | boolean | null>): PlannerIcsTask {
+  const date = typeof row.date === "string" ? row.date : null;
+  const startTime = typeof row.start_time === "string" ? row.start_time : null;
+  const endTime = typeof row.end_time === "string" ? row.end_time : null;
+  const status = typeof row.status === "string" ? row.status : null;
 
-  return detectedFields;
+  return {
+    id: String(row.id),
+    title: typeof row.title === "string" ? row.title : null,
+    description: typeof row.description === "string" ? row.description : null,
+    location: typeof row.location === "string" ? row.location : null,
+    department: typeof row.location === "string" ? row.location : null,
+    scheduled_date: date,
+    due_date: date,
+    due_time: startTime,
+    end_time: endTime,
+    is_all_day: row.is_all_day === true,
+    updated_at: typeof row.updated_at === "string" ? row.updated_at : null,
+    created_at: typeof row.created_at === "string" ? row.created_at : null,
+    status,
+  };
 }
 
 async function fetchImportedPlannerEvents(
@@ -511,6 +680,7 @@ function importedIcsEventToPlannerTask(event: ImportedIcsEvent): PlannerIcsTask 
     id: `ics-${hashText(event.uid || `${event.summary ?? "event"}-${event.dtstart ?? ""}`)}`,
     title: event.summary || "Imported calendar event",
     description: event.description,
+    location: event.location,
     department: event.location,
     scheduled_date: start?.date ?? null,
     due_date: start?.date ?? null,
@@ -604,14 +774,12 @@ async function explainEmptyPlannerCalendar(userId: string) {
   const datedCount = rows.filter((task) => getPlannerTaskDate(task)).length;
   const undatedRows = rows.filter((task) => !getPlannerTaskDate(task));
   let allDatedQuery = supabaseAdmin
-    .from("tasks")
+    .from("planner_events")
     .select("id", { count: "exact", head: true })
-    .or("scheduled_date.not.is.null,due_date.not.is.null");
+    .not("date", "is", null);
 
   if (!canViewAllPlannerTasks) {
-    allDatedQuery = allDatedQuery.or(
-      `created_by.eq.${userId},assigned_to.eq.${userId},assignee_id.eq.${userId},backend_assigned_to.eq.${userId}`,
-    );
+    allDatedQuery = allDatedQuery.eq("user_id", userId);
   }
 
   const { count: coreDatedCount, error: datedError } = await allDatedQuery;
@@ -619,12 +787,12 @@ async function explainEmptyPlannerCalendar(userId: string) {
 
   return [
     "No planner calendar events were exported.",
-    "Reason: the subscription token is valid, but no tasks in this planner scope have a usable planner date.",
-    "Planner table: public.tasks. Token table: public.planner_settings.",
-    `Calendar scope: ${canViewAllPlannerTasks ? "admin/manager, all tasks" : "tasks created by or assigned to the token owner"}.`,
-    `Tasks in scope: ${rows.length}.`,
-    `Tasks with scheduled_date or due_date in scope: ${coreDatedCount ?? 0}.`,
-    `Tasks with any detected planner date (${plannerDateFields.join(", ")}): ${datedCount}.`,
+    "Reason: the subscription token is valid, but no planner_events rows in this planner scope have a usable date.",
+    "Planner table: public.planner_events. Token table: public.planner_settings.",
+    `Calendar scope: ${canViewAllPlannerTasks ? "admin/manager, all planner events" : "planner events owned by the token owner"}.`,
+    `Planner events in scope: ${rows.length}.`,
+    `Planner events with date in scope: ${coreDatedCount ?? 0}.`,
+    `Planner events with usable planner date (${plannerDateFields.join(", ")}): ${datedCount}.`,
     ...formatUndatedPlannerRows(undatedRows),
   ].join("\n");
 }
@@ -633,7 +801,7 @@ function buildPlannerIcsContent(tasks: PlannerIcsTask[]) {
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//District Governance Portal//Planner//EN",
+    "PRODID:-//Review Dashboard//Planner//EN",
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
     "X-WR-CALNAME:District Governance Planner",
@@ -650,13 +818,15 @@ function buildPlannerIcsEvent(task: PlannerIcsTask) {
   const time = normalizeTime(task.due_time);
   const durationMinutes = extractDurationMinutes(task.description) ?? 30;
   const updated = task.updated_at || task.created_at || new Date().toISOString();
-  const location = extractDescriptionField(task.description, "Venue") ?? task.department;
+  const location =
+    task.location ?? extractDescriptionField(task.description, "Venue") ?? task.department;
   const status = toIcsStatus(task.status, task.description);
 
   const lines = [
     "BEGIN:VEVENT",
-    `UID:${escapeIcs(task.id)}@district-governance-portal`,
+    `UID:${escapeIcs(task.id)}@review-dashboard-planner`,
     `DTSTAMP:${toIcsDateTime(new Date(updated))}`,
+    `LAST-MODIFIED:${toIcsDateTime(new Date(updated))}`,
     `SUMMARY:${escapeIcs(task.title || "Planner Meeting")}`,
     task.description ? `DESCRIPTION:${escapeIcs(task.description)}` : "",
     location ? `LOCATION:${escapeIcs(location)}` : "",
@@ -664,13 +834,14 @@ function buildPlannerIcsEvent(task: PlannerIcsTask) {
     "END:VEVENT",
   ].filter(Boolean);
 
-  lines.splice(4, 0, ...buildEventDateLines(date, time, durationMinutes));
+  lines.splice(5, 0, ...buildEventDateLines(date, time, durationMinutes, task.end_time));
   return lines;
 }
 
 function getPlannerTaskDate(task: PlannerIcsTask) {
   for (const field of plannerDateFields) {
-    const value = normalizeDateKey(task[field]);
+    const fieldValue = task[field];
+    const value = typeof fieldValue === "string" ? normalizeDateKey(fieldValue) : null;
     if (value) return value;
   }
   return null;
@@ -701,7 +872,12 @@ function formatUndatedPlannerRows(rows: PlannerIcsTask[]) {
   ].filter(Boolean);
 }
 
-function buildEventDateLines(date: string, time: string | null, durationMinutes: number) {
+function buildEventDateLines(
+  date: string,
+  time: string | null,
+  durationMinutes: number,
+  explicitEndTime?: string | null,
+) {
   if (!time) {
     return [
       `DTSTART;VALUE=DATE:${toIcsDate(date)}`,
@@ -710,7 +886,8 @@ function buildEventDateLines(date: string, time: string | null, durationMinutes:
   }
 
   const startMinutes = minutesFromTime(time);
-  const endMinutes = startMinutes + durationMinutes;
+  const endTime = normalizeTime(explicitEndTime);
+  const endMinutes = endTime ? minutesFromTime(endTime) : startMinutes + durationMinutes;
   return [
     `DTSTART;TZID=Asia/Kolkata:${toIcsLocalDateTime(date, startMinutes)}`,
     `DTEND;TZID=Asia/Kolkata:${toIcsLocalDateTime(date, endMinutes)}`,
@@ -750,6 +927,20 @@ function normalizeTime(value: string | null | undefined) {
   if (period.toUpperCase() === "PM" && hour < 12) hour += 12;
   if (period.toUpperCase() === "AM" && hour === 12) hour = 0;
   return `${String(hour).padStart(2, "0")}:${minuteText}`;
+}
+
+function addMinutesToTime(value: string | null, minutes: number) {
+  if (!value) return null;
+  const start = minutesFromTime(value);
+  const end = start + minutes;
+  return timeFromMinutes(end);
+}
+
+function timeFromMinutes(value: number) {
+  const minuteOfDay = ((value % 1440) + 1440) % 1440;
+  const hour = Math.floor(minuteOfDay / 60);
+  const minute = minuteOfDay % 60;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
 function toDateKey(date: Date) {
@@ -806,8 +997,10 @@ function extractDescriptionField(description: string | null | undefined, field: 
 
 function toIcsStatus(status: string | null, description: string | null) {
   const plannerStatus = extractDescriptionField(description, "Status")?.toLowerCase();
-  if (status === "blocked" || plannerStatus === "cancelled") return "CANCELLED";
-  if (plannerStatus === "tentative") return "TENTATIVE";
+  if (status === "blocked" || status === "cancelled" || plannerStatus === "cancelled")
+    return "CANCELLED";
+  if (status === "todo" || status === "tentative" || plannerStatus === "tentative")
+    return "TENTATIVE";
   return "CONFIRMED";
 }
 
