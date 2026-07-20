@@ -25,7 +25,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { supabase } from "@/integrations/supabase/client";
-import { useDepartments, type Profile, type Task, type TaskPriority, type TaskStatus } from "@/hooks/useData";
+import {
+  useDepartments,
+  type Profile,
+  type Task,
+  type TaskPriority,
+  type TaskStatus,
+} from "@/hooks/useData";
 import { deleteTaskCalendarEvent, syncTaskCalendar } from "@/lib/googleCalendar";
 
 interface TaskDialogProps {
@@ -81,7 +87,7 @@ export function TaskDialog({
     calendar_sync_enabled: false,
   });
 
-  const employeeOptions = useMemo(() => mergeEmployees(employees), [employees, open]);
+  const employeeOptions = useMemo(() => mergeEmployees(employees), [employees]);
   const { departments } = useDepartments(employeeOptions.map((employee) => employee.department));
 
   useEffect(() => {
@@ -131,7 +137,13 @@ export function TaskDialog({
     const title = form.title || titleFromDescription(form.description);
     const scheduledDate = form.mark_today ? format(new Date(), "yyyy-MM-dd") : form.scheduled_date;
     const dueDate = form.due_date || dueDateFromDays(form.time_given_days);
-    const description = composeDescription(form.description, form.steno_note, form.remarks, form.agency, form.second_assignee);
+    const description = composeDescription(
+      form.description,
+      form.steno_note,
+      form.remarks,
+      form.agency,
+      form.second_assignee,
+    );
 
     const parsed = schema.safeParse({
       title,
@@ -154,7 +166,8 @@ export function TaskDialog({
     try {
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
       if (sessionError) throw sessionError;
-      const userId = sessionData.session?.user.id;
+      const session = sessionData.session;
+      const userId = session?.user.id;
       if (!userId) throw new Error("Please sign in before saving tasks.");
 
       const payload = {
@@ -168,31 +181,30 @@ export function TaskDialog({
           completed_at: parsed.data.status === "done" ? new Date().toISOString() : null,
         };
 
-        const { data, error } = await supabase
-          .from("tasks")
-          .update(updatePayload)
-          .eq("id", task.id)
-          .select("id,title,created_at,updated_at")
-          .single();
-
-        if (error) throw error;
+        const data = await saveTaskViaApi(
+          session.access_token,
+          { ...updatePayload, id: task.id },
+          "PUT",
+        );
         if (!data?.id) throw new Error("Task update did not return a task id.");
 
-        await logTaskAudit(data.id, userId, "task_updated", { calendar_sync_enabled: parsed.data.calendar_sync_enabled });
-        await syncCalendarAfterSave(data.id, parsed.data.calendar_sync_enabled, task.calendar_sync_enabled);
+        await logTaskAudit(data.id, userId, "task_updated", {
+          calendar_sync_enabled: parsed.data.calendar_sync_enabled,
+        });
+        await syncCalendarAfterSave(
+          data.id,
+          parsed.data.calendar_sync_enabled,
+          task.calendar_sync_enabled,
+        );
         await onSaved?.();
         toast.success("Task updated");
       } else {
-        const { data, error } = await supabase
-          .from("tasks")
-          .insert(payload)
-          .select("id,title,created_at,updated_at")
-          .single();
-
-        if (error) throw error;
+        const data = await saveTaskViaApi(session.access_token, payload, "POST");
         if (!data?.id) throw new Error("Task insert did not return a task id.");
 
-        await logTaskAudit(data.id, userId, "task_created", { calendar_sync_enabled: parsed.data.calendar_sync_enabled });
+        await logTaskAudit(data.id, userId, "task_created", {
+          calendar_sync_enabled: parsed.data.calendar_sync_enabled,
+        });
         await syncCalendarAfterSave(data.id, parsed.data.calendar_sync_enabled, false);
         await onSaved?.();
         toast.success("Task created");
@@ -216,7 +228,9 @@ export function TaskDialog({
             </div>
             <div>
               <DialogTitle>{isEdit ? "Edit Task" : "New Task"}</DialogTitle>
-              <DialogDescription>{isEdit ? "Update task details." : "Add a new task to track."}</DialogDescription>
+              <DialogDescription>
+                {isEdit ? "Update task details." : "Add a new task to track."}
+              </DialogDescription>
             </div>
           </div>
         </DialogHeader>
@@ -228,7 +242,13 @@ export function TaskDialog({
               <Textarea
                 id="task-description"
                 value={form.description}
-                onChange={(e) => setForm({ ...form, description: e.target.value, title: titleFromDescription(e.target.value) })}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    description: e.target.value,
+                    title: titleFromDescription(e.target.value),
+                  })
+                }
                 rows={4}
                 maxLength={2000}
                 placeholder="Describe the objective or task in detail..."
@@ -249,8 +269,13 @@ export function TaskDialog({
               </div>
               <div className="space-y-1.5">
                 <FieldLabel>Department</FieldLabel>
-                <Select value={form.department ?? "None (General)"} onValueChange={(v) => setForm({ ...form, department: v })}>
-                  <SelectTrigger className="bg-background"><SelectValue /></SelectTrigger>
+                <Select
+                  value={form.department ?? "None (General)"}
+                  onValueChange={(v) => setForm({ ...form, department: v })}
+                >
+                  <SelectTrigger className="bg-background">
+                    <SelectValue />
+                  </SelectTrigger>
                   <SelectContent>
                     {departments.map((department) => (
                       <SelectItem key={department.id} value={department.name}>
@@ -265,7 +290,10 @@ export function TaskDialog({
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <FieldLabel>Assigned Employee</FieldLabel>
-                <Select value={form.assignee_id ?? "none"} onValueChange={(v) => setForm({ ...form, assignee_id: v === "none" ? null : v })}>
+                <Select
+                  value={form.assignee_id ?? "none"}
+                  onValueChange={(v) => setForm({ ...form, assignee_id: v === "none" ? null : v })}
+                >
                   <SelectTrigger className="bg-background">
                     <Search className="mr-2 h-3.5 w-3.5 text-muted-foreground" />
                     <SelectValue placeholder="Search by name or designation" />
@@ -306,7 +334,9 @@ export function TaskDialog({
             <label className="flex cursor-pointer items-center gap-3 rounded-lg border bg-background px-3 py-3 text-sm font-medium shadow-sm">
               <Checkbox
                 checked={form.calendar_sync_enabled}
-                onCheckedChange={(checked) => setForm({ ...form, calendar_sync_enabled: checked === true })}
+                onCheckedChange={(checked) =>
+                  setForm({ ...form, calendar_sync_enabled: checked === true })
+                }
               />
               <span className="flex items-center gap-2">
                 <CalendarDays className="h-4 w-4 text-primary" />
@@ -319,7 +349,11 @@ export function TaskDialog({
               className="flex items-center gap-2 text-sm font-semibold text-primary"
               onClick={() => setShowAdvanced((value) => !value)}
             >
-              {showAdvanced ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              {showAdvanced ? (
+                <ChevronDown className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
               {showAdvanced ? "Hide Advanced Options" : "Show Advanced Options"}
             </button>
 
@@ -328,8 +362,13 @@ export function TaskDialog({
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <FieldLabel>Status</FieldLabel>
-                    <Select value={form.status} onValueChange={(v) => setForm({ ...form, status: v as TaskStatus })}>
-                      <SelectTrigger className="bg-background"><SelectValue /></SelectTrigger>
+                    <Select
+                      value={form.status}
+                      onValueChange={(v) => setForm({ ...form, status: v as TaskStatus })}
+                    >
+                      <SelectTrigger className="bg-background">
+                        <SelectValue />
+                      </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="todo">Pending</SelectItem>
                         <SelectItem value="in_progress">In Progress</SelectItem>
@@ -340,8 +379,13 @@ export function TaskDialog({
                   </div>
                   <div className="space-y-1.5">
                     <FieldLabel>Priority</FieldLabel>
-                    <Select value={form.priority} onValueChange={(v) => setForm({ ...form, priority: v as TaskPriority })}>
-                      <SelectTrigger className="bg-background"><SelectValue /></SelectTrigger>
+                    <Select
+                      value={form.priority}
+                      onValueChange={(v) => setForm({ ...form, priority: v as TaskPriority })}
+                    >
+                      <SelectTrigger className="bg-background">
+                        <SelectValue />
+                      </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="low">Low</SelectItem>
                         <SelectItem value="medium">Normal</SelectItem>
@@ -378,7 +422,9 @@ export function TaskDialog({
                 <label className="flex cursor-pointer items-center gap-3 rounded-lg bg-background px-3 py-3 text-sm font-medium">
                   <Checkbox
                     checked={form.mark_today}
-                    onCheckedChange={(checked) => setForm({ ...form, mark_today: checked === true })}
+                    onCheckedChange={(checked) =>
+                      setForm({ ...form, mark_today: checked === true })
+                    }
                   />
                   Mark as Today
                 </label>
@@ -387,10 +433,19 @@ export function TaskDialog({
           </div>
 
           <DialogFooter className="mt-5 grid gap-2 border-t pt-4 sm:grid-cols-2 sm:justify-between">
-            <Button type="button" variant="secondary" className="h-11 w-full rounded-full" onClick={() => onOpenChange(false)}>
+            <Button
+              type="button"
+              variant="secondary"
+              className="h-11 w-full rounded-full"
+              onClick={() => onOpenChange(false)}
+            >
               Cancel
             </Button>
-            <Button type="submit" disabled={saving} className="h-11 w-full rounded-full shadow-elevated">
+            <Button
+              type="submit"
+              disabled={saving}
+              className="h-11 w-full rounded-full shadow-elevated"
+            >
               {saving ? "Saving..." : isEdit ? "Save Changes" : "Create Task"}
             </Button>
           </DialogFooter>
@@ -403,12 +458,17 @@ export function TaskDialog({
 function mergeEmployees(primary: Profile[]) {
   const byId = new Map<string, Profile>();
   for (const employee of primary) byId.set(employee.id, employee);
-  return Array.from(byId.values()).sort((a, b) => (a.full_name || a.email).localeCompare(b.full_name || b.email));
+  return Array.from(byId.values()).sort((a, b) =>
+    (a.full_name || a.email).localeCompare(b.full_name || b.email),
+  );
 }
 
 function FieldLabel({ children, htmlFor }: { children: React.ReactNode; htmlFor?: string }) {
   return (
-    <Label htmlFor={htmlFor} className="text-[11px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+    <Label
+      htmlFor={htmlFor}
+      className="text-[11px] font-bold uppercase tracking-[0.18em] text-muted-foreground"
+    >
       {children}
     </Label>
   );
@@ -426,7 +486,13 @@ function dueDateFromDays(days: string) {
   return format(addDays(new Date(), value), "yyyy-MM-dd");
 }
 
-function composeDescription(description: string, note: string, remarks: string, agency: string, secondAssignee: string) {
+function composeDescription(
+  description: string,
+  note: string,
+  remarks: string,
+  agency: string,
+  secondAssignee: string,
+) {
   const extra = [
     agency ? `Other Agency: ${agency}` : "",
     secondAssignee ? `Second Assignee: ${secondAssignee}` : "",
@@ -448,6 +514,29 @@ async function syncCalendarAfterSave(taskId: string, syncEnabled: boolean, wasSy
   } catch (error) {
     toast.error(error instanceof Error ? error.message : "Google Calendar sync failed");
   }
+}
+
+async function saveTaskViaApi(
+  accessToken: string,
+  payload: Record<string, unknown>,
+  method: "POST" | "PUT",
+) {
+  const response = await fetch("/api/tasks", {
+    method,
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Task save failed");
+  }
+
+  const data = (await response.json()) as { task?: { id?: string } };
+  return data.task;
 }
 
 async function logTaskAudit(

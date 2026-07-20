@@ -57,6 +57,9 @@ export default {
       if (url.pathname === "/api/planner/tasks") {
         return await handlePlannerTaskSave(request);
       }
+      if (url.pathname === "/api/tasks") {
+        return await handleTaskSave(request);
+      }
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);
@@ -69,6 +72,62 @@ export default {
     }
   },
 };
+
+async function handleTaskSave(request: Request) {
+  if (!["POST", "PUT"].includes(request.method)) {
+    return new Response("Method not allowed", {
+      status: 405,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  try {
+    const user = await authenticatedPlannerUser(request);
+    const body = (await request.json()) as TaskSaveRequest;
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const payload = taskPayload(body);
+
+    if (request.method === "PUT") {
+      if (!body.id) {
+        return new Response("Task id required", {
+          status: 400,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        });
+      }
+
+      const existing = await getTaskForUser(body.id, user.id, user.canManageAllTasks);
+      if (!existing) {
+        return new Response("Task not found", {
+          status: 404,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        });
+      }
+
+      const { data, error } = await supabaseAdmin
+        .from("tasks")
+        .update(payload)
+        .eq("id", body.id)
+        .select(legacyPlannerTaskSelect)
+        .single();
+      if (error) throw error;
+      return Response.json({ task: data }, { status: 200 });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("tasks")
+      .insert({ ...payload, created_by: user.id })
+      .select(legacyPlannerTaskSelect)
+      .single();
+    if (error) throw error;
+    return Response.json({ task: data }, { status: 201 });
+  } catch (error) {
+    console.error("[Task Save] failed", error);
+    return new Response(error instanceof Error ? error.message : "Task save failed", {
+      status: error instanceof PlannerAuthError ? error.status : 500,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+}
 
 async function handlePlannerIcsExport(url: URL) {
   try {
@@ -321,6 +380,10 @@ type PlannerTaskSaveRequest = {
   calendar_sync_enabled?: boolean | null;
 };
 
+type TaskSaveRequest = PlannerTaskSaveRequest & {
+  completed_at?: string | null;
+};
+
 type AuthenticatedPlannerUser = {
   id: string;
   canManageAllTasks: boolean;
@@ -419,6 +482,26 @@ function legacyPlannerTaskPayload(body: PlannerTaskSaveRequest) {
   };
 }
 
+function taskPayload(body: TaskSaveRequest) {
+  const title = body.title?.trim();
+  if (!title) throw new PlannerAuthError("Task description required", 400);
+  const status = normalizeTaskStatus(body.status);
+
+  return {
+    title,
+    description: body.description?.trim() || null,
+    department: body.department?.trim() || null,
+    scheduled_date: normalizeDateKey(body.scheduled_date),
+    due_date: normalizeDateKey(body.due_date),
+    due_time: normalizeTime(body.due_time) || null,
+    assignee_id: body.assignee_id || null,
+    status,
+    priority: normalizeTaskPriority(body.priority),
+    completed_at: status === "done" ? body.completed_at || new Date().toISOString() : null,
+    calendar_sync_enabled: body.calendar_sync_enabled === true,
+  };
+}
+
 async function getPlannerTaskForUser(taskId: string, userId: string) {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const canManageAllTasks = await userCanViewAllTasks(userId);
@@ -439,6 +522,23 @@ async function getPlannerTaskForUser(taskId: string, userId: string) {
     }
     throw error;
   }
+  return data;
+}
+
+async function getTaskForUser(taskId: string, userId: string, canManageAllTasks: boolean) {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  let query = supabaseAdmin
+    .from("tasks")
+    .select("id,created_by,assignee_id")
+    .eq("id", taskId)
+    .maybeSingle();
+
+  if (!canManageAllTasks) {
+    query = query.or(`created_by.eq.${userId},assignee_id.eq.${userId}`);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
   return data;
 }
 
