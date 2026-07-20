@@ -36,7 +36,6 @@ export const fallbackDepartmentNames = [
   "Education",
   "Health",
   "SBM",
-  "Zila Panchayat",
 ];
 
 export function isLocalTaskMode(userId: string | null | undefined) {
