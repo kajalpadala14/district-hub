@@ -455,7 +455,28 @@ function TasksManagementPage() {
   };
 
   const handleExport = () => {
-    toast.success("Export prepared for the current task view");
+    if (filtered.length === 0) {
+      toast.error("No tasks to export");
+      return;
+    }
+    const rows = filtered.map(({ task, agency, assignee, assignedBy, comments, displayStatus }, index) => ({
+      sno: index + 1,
+      task_number: task.task_number ?? task.id.slice(0, 8),
+      title: task.title,
+      description: task.description ?? "",
+      agency,
+      department: task.department ?? "",
+      assignee,
+      assigned_by: assignedBy,
+      allocated_date: formatDate(task.created_at),
+      due_date: formatDate(task.due_date),
+      scheduled_date: formatDate(task.scheduled_date),
+      status: statusLabelForDisplay(displayStatus),
+      priority: priorityLabels[task.priority],
+      comments,
+    }));
+    downloadExcelWorkbook(rows, `tasks-export-${format(new Date(), "yyyy-MM-dd-HHmm")}.xls`);
+    toast.success(`${rows.length} task${rows.length === 1 ? "" : "s"} exported`);
   };
 
   const handleScheduleMeeting = (task: Task) => {
@@ -1380,6 +1401,75 @@ function formatDate(value: string | null | undefined, pattern = "MMM d, yyyy") {
   const date = safeParseDate(value);
   if (!date) return "Not set";
   return format(date, pattern);
+}
+
+function statusLabelForDisplay(status: "pending" | "in_progress" | "completed" | "overdue") {
+  const labels = {
+    pending: "Pending",
+    in_progress: "In Progress",
+    completed: "Completed",
+    overdue: "Overdue",
+  };
+  return labels[status];
+}
+
+function downloadExcelWorkbook(rows: Array<Record<string, string | number>>, fileName: string) {
+  const headers = [
+    ["sno", "S.No"],
+    ["task_number", "Task No"],
+    ["title", "Task"],
+    ["description", "Description"],
+    ["agency", "Agency"],
+    ["department", "Department"],
+    ["assignee", "Assigned To"],
+    ["assigned_by", "Assigned By"],
+    ["allocated_date", "Allocated Date"],
+    ["due_date", "Deadline"],
+    ["scheduled_date", "Scheduled Date"],
+    ["status", "Status"],
+    ["priority", "Priority"],
+    ["comments", "Comments"],
+  ] as const;
+  const headerHtml = headers.map(([, label]) => `<th>${escapeHtml(label)}</th>`).join("");
+  const bodyHtml = rows
+    .map((row) => `<tr>${headers.map(([key]) => `<td>${escapeHtml(row[key] ?? "")}</td>`).join("")}</tr>`)
+    .join("");
+  const workbook = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    table { border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px; }
+    th { background: #4f2fd6; color: #ffffff; font-weight: 700; }
+    th, td { border: 1px solid #d9dce7; padding: 6px 8px; vertical-align: top; }
+    td { mso-number-format: "\\@"; }
+  </style>
+</head>
+<body>
+  <table>
+    <thead><tr>${headerHtml}</tr></thead>
+    <tbody>${bodyHtml}</tbody>
+  </table>
+</body>
+</html>`;
+  const blob = new Blob([workbook], { type: "application/vnd.ms-excel;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function escapeHtml(value: string | number) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function safeParseDate(value: string | null | undefined) {
