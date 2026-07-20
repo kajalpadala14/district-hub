@@ -10,6 +10,7 @@ import {
   Plus,
   RefreshCw,
   Settings,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -104,6 +105,7 @@ function PlannerPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [plannerSettings, setPlannerSettings] = useState<PlannerSettings>(defaultPlannerSettings);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
 
   const days = useMemo(
     () => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)),
@@ -310,6 +312,45 @@ function PlannerPage() {
     await copyText("Day message", message);
   };
 
+  const deletePlannerMeeting = async (task: Task) => {
+    if (task.id.startsWith("ics-")) {
+      toast.error("Imported calendar events cannot be deleted from this app.");
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete meeting "${task.title}"?`);
+    if (!confirmed) return;
+
+    setDeletingEventId(task.id);
+    try {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw sessionError;
+      const accessToken = sessionData.session?.access_token;
+      if (!accessToken) throw new Error("Please sign in before deleting planner meetings.");
+
+      const response = await fetch("/api/planner/tasks", {
+        method: "DELETE",
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ id: task.id }),
+      });
+
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || "Meeting delete failed");
+      }
+
+      await refreshTasks();
+      toast.success("Meeting deleted");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Meeting delete failed");
+    } finally {
+      setDeletingEventId(null);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <section className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -434,20 +475,29 @@ function PlannerPage() {
                   {slots.map((slot, slotIndex) => {
                     const task = taskForPlannerSlot(dayTasks, slot, slotIndex);
                     const showTask = !!task;
+                    const openSlot = () => {
+                      if (showTask && task) {
+                        openExisting(task, key, slot.range.split(" - ")[0]);
+                      } else {
+                        openNew(key, slot.range.split(" - ")[0]);
+                      }
+                    };
+
                     return (
-                      <button
+                      <div
                         key={`${key}-${slot.range}`}
-                        type="button"
+                        role="button"
+                        tabIndex={0}
                         className={cn(
-                          "w-full rounded-lg border bg-background/80 p-2 text-left shadow-card transition hover:border-primary/40",
+                          "w-full cursor-pointer rounded-lg border bg-background/80 p-2 text-left shadow-card transition hover:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/30",
                           slot.tall ? "min-h-[72px]" : "min-h-[46px]",
                           showTask && "border-primary/30 bg-primary/15",
                         )}
-                        onClick={() => {
-                          if (showTask && task) {
-                            openExisting(task, key, slot.range.split(" - ")[0]);
-                          } else {
-                            openNew(key, slot.range.split(" - ")[0]);
+                        onClick={openSlot}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            openSlot();
                           }
                         }}
                       >
@@ -458,7 +508,23 @@ function PlannerPage() {
                           )}
                         </div>
                         {showTask && task ? (
-                          <div className="mt-2 rounded-md bg-primary/20 p-2 text-primary">
+                          <div className="relative mt-2 rounded-md bg-primary/20 p-2 pr-9 text-primary">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="absolute right-1.5 top-1.5 h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                              aria-label={`Delete meeting ${task.title}`}
+                              title="Delete meeting"
+                              disabled={deletingEventId === task.id}
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                void deletePlannerMeeting(task);
+                              }}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
                             <div className="flex items-start gap-1.5">
                               <CalendarDays className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                               <div className="min-w-0">
@@ -490,7 +556,7 @@ function PlannerPage() {
                             {slot.label}
                           </p>
                         )}
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
