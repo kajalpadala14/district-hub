@@ -186,16 +186,20 @@ export async function logAudit(
   action: "calendar_synced" | "calendar_sync_failed" | "task_deleted",
   metadata: Record<string, unknown>,
 ) {
-  const modern = await serviceClient.from("task_audit_logs").insert({
+  const modernPayload = {
     task_id: taskId,
     action_type: action,
     old_value: null,
     new_value: metadata,
     performed_by: actorId,
-  });
+  };
+  const modern = await serviceClient.from("task_audit_logs").insert(modernPayload);
   if (!modern.error) return;
 
-  console.warn("[Task Audit] modern audit insert failed, trying legacy shape", modern.error);
+  const withoutTask = await serviceClient.from("task_audit_logs").insert({ ...modernPayload, task_id: null });
+  if (!withoutTask.error) return;
+
+  console.warn("[Task Audit] modern audit insert failed, trying legacy shape", modern.error, withoutTask.error);
   const legacy = await serviceClient.from("task_audit_logs").insert({
     task_id: taskId,
     actor_id: actorId,

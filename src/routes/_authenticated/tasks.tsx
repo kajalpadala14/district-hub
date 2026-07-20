@@ -28,7 +28,18 @@ import { differenceInCalendarDays, format, isPast, isToday, parseISO } from "dat
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Popover,
   PopoverContent,
@@ -78,6 +89,7 @@ export const Route = createFileRoute("/_authenticated/tasks")({
 type QuickFilter = "all" | "today" | "important";
 type CommentsFilter = "all" | "with-comments" | "without-comments";
 type SortMode = "latest" | "deadline" | "priority";
+type BulkSelectValue = "keep" | "none" | string;
 
 const fallbackUserId = LOCAL_USER_ID;
 
@@ -114,6 +126,16 @@ function TasksManagementPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Task | null>(null);
   const [meetingTask, setMeetingTask] = useState<Task | null>(null);
+  const [bulkMode, setBulkMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkStatus, setBulkStatus] = useState<"keep" | TaskStatus>("keep");
+  const [bulkPriority, setBulkPriority] = useState<"keep" | TaskPriority>("keep");
+  const [bulkDepartment, setBulkDepartment] = useState<BulkSelectValue>("keep");
+  const [bulkAssignee, setBulkAssignee] = useState<BulkSelectValue>("keep");
+  const [bulkDueDate, setBulkDueDate] = useState("");
+  const [bulkScheduledDate, setBulkScheduledDate] = useState("");
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
   useEffect(() => {
     const department = new URLSearchParams(window.location.search).get("department");
@@ -177,6 +199,10 @@ function TasksManagementPage() {
       .sort((a, b) => sortTasks(a.task, b.task, sortMode));
   }, [decoratedTasks, query, quickFilter, statusFilter, agencyFilter, departmentFilter, commentsFilter, sortMode]);
 
+  useEffect(() => {
+    setSelectedIds((ids) => ids.filter((id) => filtered.some((item) => item.task.id === id)));
+  }, [filtered]);
+
   const completed = taskItems.filter((task) => task.status === "done").length;
   const overdue = taskItems.filter((task) => displayStatusFor(task) === "overdue").length;
   const pending = taskItems.filter((task) => task.status !== "done").length;
@@ -192,6 +218,113 @@ function TasksManagementPage() {
 
   const currentUserId = user?.id ?? profiles[0]?.id ?? fallbackUserId;
   const localMode = isLocalTaskMode(user?.id);
+  const selectedTasks = useMemo(
+    () => filtered.map((item) => item.task).filter((task) => selectedIds.includes(task.id)),
+    [filtered, selectedIds],
+  );
+  const visibleIds = useMemo(() => filtered.map((item) => item.task.id), [filtered]);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id));
+
+  const toggleBulkMode = () => {
+    setBulkMode((value) => {
+      if (value) setSelectedIds([]);
+      return !value;
+    });
+  };
+
+  const toggleTaskSelection = (taskId: string) => {
+    setSelectedIds((ids) => (ids.includes(taskId) ? ids.filter((id) => id !== taskId) : [...ids, taskId]));
+  };
+
+  const toggleAllVisible = () => {
+    setSelectedIds((ids) => {
+      if (allVisibleSelected) return ids.filter((id) => !visibleIds.includes(id));
+      return Array.from(new Set([...ids, ...visibleIds]));
+    });
+  };
+
+  const resetBulkFields = () => {
+    setBulkStatus("keep");
+    setBulkPriority("keep");
+    setBulkDepartment("keep");
+    setBulkAssignee("keep");
+    setBulkDueDate("");
+    setBulkScheduledDate("");
+  };
+
+  const applyBulkEdit = async () => {
+    if (selectedTasks.length === 0) {
+      toast.error("Select tasks first");
+      return;
+    }
+
+    const updates: Partial<Pick<Task, "status" | "priority" | "department" | "assignee_id" | "due_date" | "scheduled_date" | "completed_at">> = {};
+    if (bulkStatus !== "keep") {
+      updates.status = bulkStatus;
+      updates.completed_at = bulkStatus === "done" ? new Date().toISOString() : null;
+    }
+    if (bulkPriority !== "keep") updates.priority = bulkPriority;
+    if (bulkDepartment !== "keep") updates.department = bulkDepartment === "none" ? null : bulkDepartment;
+    if (bulkAssignee !== "keep") updates.assignee_id = bulkAssignee === "none" ? null : bulkAssignee;
+    if (bulkDueDate) updates.due_date = bulkDueDate;
+    if (bulkScheduledDate) updates.scheduled_date = bulkScheduledDate;
+
+    if (Object.keys(updates).length === 0) {
+      toast.error("Choose at least one field to update");
+      return;
+    }
+
+    setBulkSaving(true);
+    try {
+      if (localMode) {
+        for (const task of selectedTasks) updateLocalTask(task.id, updates);
+        await logLocalTaskAudit();
+      } else {
+        const { error } = await supabase.from("tasks").update(updates).in("id", selectedIds);
+        if (error) throw error;
+        await Promise.all(selectedTasks.map((task) => logTaskAudit(task.id, currentUserId, "task_updated", { bulk: true, updates })));
+        await refreshTasks();
+      }
+
+      toast.success(`${selectedTasks.length} task${selectedTasks.length === 1 ? "" : "s"} updated`);
+      resetBulkFields();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Bulk update failed");
+    } finally {
+      setBulkSaving(false);
+    }
+  };
+
+  const deleteSelectedTasks = async () => {
+    if (selectedTasks.length === 0) return;
+    setBulkSaving(true);
+    try {
+      if (localMode) {
+        for (const task of selectedTasks) deleteLocalTask(task.id);
+        await logLocalTaskAudit();
+      } else {
+        for (const task of selectedTasks) {
+          if (task.google_calendar_event_id) {
+            await deleteTaskCalendarEvent(task.id).catch((error) => {
+              console.warn("[Bulk Delete] calendar delete failed", error);
+            });
+          }
+        }
+        await Promise.all(selectedTasks.map((task) => logTaskAudit(task.id, currentUserId, "task_deleted", { bulk: true, title: task.title })));
+        const { error } = await supabase.from("tasks").delete().in("id", selectedIds);
+        if (error) throw error;
+        await refreshTasks();
+      }
+
+      toast.success(`${selectedTasks.length} task${selectedTasks.length === 1 ? "" : "s"} deleted`);
+      setSelectedIds([]);
+      setBulkDeleteOpen(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Bulk delete failed");
+    } finally {
+      setBulkSaving(false);
+    }
+  };
 
   const handleComplete = async (task: Task) => {
     if (localMode) {
@@ -341,9 +474,9 @@ function TasksManagementPage() {
             <Download className="h-4 w-4" />
             Export
           </Button>
-          <Button variant="outline" onClick={() => toast.info("Select tasks to use bulk edit")} className="justify-center">
+          <Button variant={bulkMode ? "default" : "outline"} onClick={toggleBulkMode} className="justify-center">
             <UsersRound className="h-4 w-4" />
-            Bulk Edit
+            {bulkMode ? "Done Bulk" : "Bulk Edit"}
           </Button>
           <Button className="col-span-2 justify-center sm:col-span-1" onClick={() => { setEditing(null); setDialogOpen(true); }}>
             <Plus className="h-4 w-4" />
@@ -416,6 +549,79 @@ function TasksManagementPage() {
         </CardContent>
       </Card>
 
+      {bulkMode && (
+        <Card className="min-w-0 border-primary/25 shadow-card">
+          <CardContent className="space-y-4 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold">Bulk Edit</h3>
+                <p className="text-xs text-muted-foreground">{selectedTasks.length} selected from current task register</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={toggleAllVisible}>
+                  {allVisibleSelected ? "Clear Visible" : "Select Visible"}
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => setSelectedIds([])} disabled={selectedTasks.length === 0}>
+                  Clear
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+              <FilterSelect value={bulkStatus} onValueChange={(value) => setBulkStatus(value as "keep" | TaskStatus)} placeholder="Status">
+                <SelectItem value="keep">Keep Status</SelectItem>
+                <SelectItem value="todo">Pending</SelectItem>
+                <SelectItem value="in_progress">In Progress</SelectItem>
+                <SelectItem value="done">Completed</SelectItem>
+                <SelectItem value="blocked">Overdue</SelectItem>
+              </FilterSelect>
+              <FilterSelect value={bulkPriority} onValueChange={(value) => setBulkPriority(value as "keep" | TaskPriority)} placeholder="Priority">
+                <SelectItem value="keep">Keep Priority</SelectItem>
+                <SelectItem value="low">Low</SelectItem>
+                <SelectItem value="medium">Normal</SelectItem>
+                <SelectItem value="high">High</SelectItem>
+                <SelectItem value="urgent">Important</SelectItem>
+              </FilterSelect>
+              <FilterSelect value={bulkDepartment} onValueChange={setBulkDepartment} placeholder="Department">
+                <SelectItem value="keep">Keep Department</SelectItem>
+                <SelectItem value="none">None</SelectItem>
+                {departmentOptions.map((department) => (
+                  <SelectItem key={department.id} value={department.name}>{department.name}</SelectItem>
+                ))}
+              </FilterSelect>
+              <FilterSelect value={bulkAssignee} onValueChange={setBulkAssignee} placeholder="Assignee">
+                <SelectItem value="keep">Keep Assignee</SelectItem>
+                <SelectItem value="none">Unassigned</SelectItem>
+                {profiles.map((profile) => (
+                  <SelectItem key={profile.id} value={profile.id}>{profile.full_name || profile.job_title || profile.email}</SelectItem>
+                ))}
+              </FilterSelect>
+              <Input type="date" aria-label="Bulk due date" value={bulkDueDate} onChange={(event) => setBulkDueDate(event.target.value)} />
+              <Input type="date" aria-label="Bulk scheduled date" value={bulkScheduledDate} onChange={(event) => setBulkScheduledDate(event.target.value)} />
+            </div>
+
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="outline" onClick={resetBulkFields} disabled={bulkSaving}>
+                Reset Fields
+              </Button>
+              <Button type="button" onClick={applyBulkEdit} disabled={bulkSaving || selectedTasks.length === 0}>
+                {bulkSaving ? "Saving..." : "Apply Changes"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="border-destructive/30 text-destructive hover:text-destructive"
+                onClick={() => setBulkDeleteOpen(true)}
+                disabled={bulkSaving || selectedTasks.length === 0}
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete Selected
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <Card className="min-w-0 overflow-hidden shadow-card">
         <CardContent className="p-0">
           <div className="border-b bg-primary-muted/40 px-4 py-3">
@@ -445,6 +651,9 @@ function TasksManagementPage() {
                 key={item.task.id}
                 index={index}
                 item={item}
+                bulkMode={bulkMode}
+                selected={selectedIds.includes(item.task.id)}
+                onToggleSelected={toggleTaskSelection}
                 onEdit={(task) => { setEditing(task); setDialogOpen(true); }}
                 onScheduleMeeting={handleScheduleMeeting}
                 onExtendDeadline={handleExtendDeadline}
@@ -461,6 +670,11 @@ function TasksManagementPage() {
             <Table className="min-w-[1320px]">
               <TableHeader className="bg-muted/45">
                 <TableRow>
+                  {bulkMode && (
+                    <TableHead className="w-12">
+                      <Checkbox checked={allVisibleSelected} onCheckedChange={toggleAllVisible} aria-label="Select all visible tasks" />
+                    </TableHead>
+                  )}
                   <TableHead className="w-12">S.No</TableHead>
                   <TableHead className="w-48">Task</TableHead>
                   <TableHead className="w-24">Due In</TableHead>
@@ -477,13 +691,22 @@ function TasksManagementPage() {
               <TableBody>
                 {filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={11} className="py-12 text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={bulkMode ? 12 : 11} className="py-12 text-center text-sm text-muted-foreground">
                       No tasks found for the selected filters.
                     </TableCell>
                   </TableRow>
                 )}
                 {filtered.map(({ task, assignee, assigneeProfile, assignedBy, agency, comments, displayStatus }, index) => (
                   <TableRow key={task.id} className="bg-card/70">
+                    {bulkMode && (
+                      <TableCell>
+                        <Checkbox
+                          checked={selectedIds.includes(task.id)}
+                          onCheckedChange={() => toggleTaskSelection(task.id)}
+                          aria-label={`Select task ${index + 1}`}
+                        />
+                      </TableCell>
+                    )}
                     <TableCell className="font-medium tabular-nums">{index + 1}</TableCell>
                     <TableCell>
                       <div className="min-w-0">
@@ -566,6 +789,29 @@ function TasksManagementPage() {
         }}
         onSaved={refreshTasks}
       />
+      <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete selected tasks?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete {selectedTasks.length} selected task{selectedTasks.length === 1 ? "" : "s"}.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkSaving}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={bulkSaving}
+              onClick={(event) => {
+                event.preventDefault();
+                void deleteSelectedTasks();
+              }}
+            >
+              {bulkSaving ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -712,6 +958,9 @@ type TaskActionHandlers = {
 function TaskMobileCard({
   index,
   item,
+  bulkMode = false,
+  selected = false,
+  onToggleSelected,
   onEdit,
   onScheduleMeeting,
   onExtendDeadline,
@@ -723,13 +972,23 @@ function TaskMobileCard({
 }: {
   index: number;
   item: TaskListItem;
+  bulkMode?: boolean;
+  selected?: boolean;
+  onToggleSelected?: (taskId: string) => void;
 } & TaskActionHandlers) {
   const { task, agency, assignee, assigneeProfile, assignedBy, comments, displayStatus } = item;
   return (
-    <article className="min-w-0 rounded-md border bg-card p-4 shadow-sm">
+    <article className={cn("min-w-0 rounded-md border bg-card p-4 shadow-sm", selected && "border-primary/60 ring-2 ring-primary/15")}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
+            {bulkMode && (
+              <Checkbox
+                checked={selected}
+                onCheckedChange={() => onToggleSelected?.(task.id)}
+                aria-label={`Select task ${index + 1}`}
+              />
+            )}
             <span className="rounded bg-muted px-2 py-1 text-xs font-semibold tabular-nums text-muted-foreground">
               #{index + 1}
             </span>
@@ -1187,16 +1446,20 @@ async function logTaskAudit(
   action: "task_updated" | "task_deleted",
   metadata: Record<string, unknown>,
 ) {
-  const modern = await supabase.from("task_audit_logs").insert({
+  const modernPayload = {
     task_id: taskId,
     action_type: action,
     old_value: null,
     new_value: metadata,
     performed_by: actorId,
-  });
+  };
+  const modern = await supabase.from("task_audit_logs").insert(modernPayload);
   if (!modern.error) return;
 
-  console.warn("[Task Audit] modern audit insert failed, trying legacy shape", modern.error);
+  const withoutTask = await supabase.from("task_audit_logs").insert({ ...modernPayload, task_id: null });
+  if (!withoutTask.error) return;
+
+  console.warn("[Task Audit] modern audit insert failed, trying legacy shape", modern.error, withoutTask.error);
   const legacy = await supabase.from("task_audit_logs").insert({
     task_id: taskId,
     actor_id: actorId,
