@@ -46,6 +46,7 @@ export const Route = createFileRoute("/_authenticated/planner")({
 });
 
 type PlannerSlot = { range: string; label: string | null; tall?: boolean };
+type PlannerDialogMode = "create" | "edit";
 type PlannerSettings = {
   dayStart: string;
   dayEnd: string;
@@ -93,6 +94,7 @@ function PlannerPage() {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date(), { weekStartsOn: 1 }));
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Task | null>(null);
+  const [dialogMode, setDialogMode] = useState<PlannerDialogMode>("create");
   const [defaultDate, setDefaultDate] = useState<string | null>(null);
   const [defaultTime, setDefaultTime] = useState("10:00 AM");
   const [showSettings, setShowSettings] = useState(false);
@@ -241,9 +243,26 @@ function PlannerPage() {
 
   const openNew = (dateKey: string, time = "10:00 AM") => {
     setEditing(null);
+    setDialogMode("create");
     setDefaultDate(dateKey);
     setDefaultTime(time);
     setDialogOpen(true);
+  };
+
+  const openExisting = (task: Task, dateKey: string, time: string) => {
+    setEditing(task);
+    setDialogMode(task.id.startsWith("ics-") ? "create" : "edit");
+    setDefaultDate(dateKey);
+    setDefaultTime(time);
+    setDialogOpen(true);
+  };
+
+  const handleDialogOpenChange = (open: boolean) => {
+    setDialogOpen(open);
+    if (!open) {
+      setEditing(null);
+      setDialogMode("create");
+    }
   };
 
   const savePlannerSettings = async () => {
@@ -440,10 +459,7 @@ function PlannerPage() {
                         )}
                         onClick={() => {
                           if (showTask && task) {
-                            setEditing(task);
-                            setDefaultDate(key);
-                            setDefaultTime(slot.range.split(" - ")[0]);
-                            setDialogOpen(true);
+                            openExisting(task, key, slot.range.split(" - ")[0]);
                           } else {
                             openNew(key, slot.range.split(" - ")[0]);
                           }
@@ -490,8 +506,9 @@ function PlannerPage() {
 
       <EventDialog
         open={dialogOpen}
-        onOpenChange={setDialogOpen}
+        onOpenChange={handleDialogOpenChange}
         event={editing}
+        mode={dialogMode}
         defaultDate={defaultDate}
         defaultTime={defaultTime}
         departments={departments.map((department) => department.name)}
@@ -595,6 +612,7 @@ function EventDialog({
   open,
   onOpenChange,
   event,
+  mode,
   defaultDate,
   defaultTime,
   departments,
@@ -603,11 +621,13 @@ function EventDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   event: Task | null;
+  mode: PlannerDialogMode;
   defaultDate: string | null;
   defaultTime: string;
   departments: string[];
   onSaved: () => void | Promise<void>;
 }) {
+  const isEditMode = mode === "edit" && !!event && !event.id.startsWith("ics-");
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
     title: "",
@@ -635,9 +655,9 @@ function EventDialog({
       venue: "",
       attendees: "",
       notes: event?.description ?? "",
-      calendar_sync_enabled: event?.calendar_sync_enabled ?? false,
+      calendar_sync_enabled: isEditMode ? (event?.calendar_sync_enabled ?? false) : false,
     });
-  }, [event, defaultDate, defaultTime, open]);
+  }, [event, defaultDate, defaultTime, open, isEditMode]);
 
   const submit = async (submitEvent: React.FormEvent<HTMLFormElement>) => {
     submitEvent.preventDefault();
@@ -678,21 +698,21 @@ function EventDialog({
       if (!sessionData.session?.user.id) throw new Error("Please sign in before saving planner events.");
 
       const savedTask = await savePlannerTask(
-        event && !event.id.startsWith("ics-") ? event.id : null,
+        isEditMode ? event.id : null,
         payload,
         sessionData.session.access_token,
         sessionData.session.user.id,
       );
 
       await onSaved();
-      toast.success(event ? "Event updated" : "Event saved");
+      toast.success(isEditMode ? "Event updated" : "Event created");
 
       if (form.calendar_sync_enabled) {
         try {
           const connected = await isGoogleCalendarConnected(sessionData.session.user.id);
           if (!connected) {
             window.localStorage.setItem(pendingPlannerGoogleSyncKey, savedTask.id);
-            toast.message("Event saved. Connect Google Calendar to finish sync.");
+          toast.message("Event created. Connect Google Calendar to finish sync.");
             await requestGoogleCalendarConnection(window.location.href);
             return;
           }
@@ -723,7 +743,7 @@ function EventDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="overflow-hidden border-0 bg-muted p-0 shadow-2xl sm:max-w-md">
         <DialogHeader className="px-5 pt-5">
-          <DialogTitle className="text-xl">{event ? "Edit Meeting" : "New Meeting"}</DialogTitle>
+          <DialogTitle className="text-xl">{isEditMode ? "Edit Meeting" : "New Meeting"}</DialogTitle>
           <DialogDescription className="sr-only">Create or edit planner meeting details.</DialogDescription>
         </DialogHeader>
 
