@@ -98,6 +98,7 @@ function PlannerPage() {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [importedIcsTasks, setImportedIcsTasks] = useState<Task[]>([]);
   const [importedIcsRefreshKey, setImportedIcsRefreshKey] = useState(0);
+  const [focusedImportToken, setFocusedImportToken] = useState("");
 
   const days = useMemo(() => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)), [weekStart]);
   const slots = useMemo(() => buildPlannerSlots(plannerSettings), [plannerSettings]);
@@ -181,6 +182,10 @@ function PlannerPage() {
         const importedTasks = await loadImportedEvents(plannerSettings.token);
         if (cancelled) return;
         setImportedIcsTasks(importedTasks);
+        if (plannerSettings.token !== focusedImportToken) {
+          focusPlannerWeekOnImportedTasks(importedTasks, setWeekStart);
+          setFocusedImportToken(plannerSettings.token);
+        }
       } catch (error) {
         console.warn("[Planner ICS Import] failed", error);
         if (!cancelled) setImportedIcsTasks([]);
@@ -197,7 +202,7 @@ function PlannerPage() {
       window.clearInterval(interval);
       window.removeEventListener("focus", handleFocus);
     };
-  }, [plannerSettings.token, importedIcsRefreshKey, loadImportedEvents]);
+  }, [plannerSettings.token, importedIcsRefreshKey, loadImportedEvents, focusedImportToken]);
 
   const tasksByDay = useMemo(() => {
     const map = new Map<string, Task[]>();
@@ -648,29 +653,30 @@ function EventDialog({
       if (sessionError) throw sessionError;
       if (!sessionData.session?.user.id) throw new Error("Please sign in before saving planner events.");
 
-      const result = event
-        ? await supabase
-            .from("tasks")
-            .update(payload)
-            .eq("id", event.id)
-            .select("id")
-            .single()
-        : await supabase
-            .from("tasks")
-            .insert({ ...payload, created_by: sessionData.session.user.id })
-            .select("id")
-            .single();
-
-      if (result.error) throw result.error;
-      if (!result.data?.id) throw new Error("Event save did not return an id.");
-
-      if (form.calendar_sync_enabled) {
-        await syncTaskCalendar(result.data.id);
-        toast.success("Google Calendar synced");
-      }
+      const savedTask = await savePlannerTask(
+        event && !event.id.startsWith("ics-") ? event.id : null,
+        payload,
+        sessionData.session.access_token,
+      );
 
       await onSaved();
       toast.success(event ? "Event updated" : "Event saved");
+
+      if (form.calendar_sync_enabled) {
+        try {
+          await syncTaskCalendar(savedTask.id);
+          await onSaved();
+          toast.success("Google Calendar synced");
+        } catch (syncError) {
+          console.error("[Planner Google Calendar Sync] failed", syncError);
+          toast.error(
+            syncError instanceof Error
+              ? `Event saved, but Google Calendar sync failed: ${syncError.message}`
+              : "Event saved, but Google Calendar sync failed",
+          );
+        }
+      }
+
       onOpenChange(false);
     } catch (error) {
       console.error("[Planner Event Save] failed", error);
@@ -1045,6 +1051,37 @@ function focusPlannerWeekOnImportedTasks(tasks: Task[], setWeekStart: (date: Dat
   const today = format(new Date(), "yyyy-MM-dd");
   const targetDate = dates.find((date) => date >= today) ?? dates[0];
   setWeekStart(startOfWeek(parseISO(targetDate), { weekStartsOn: 1 }));
+}
+
+async function savePlannerTask(
+  id: string | null,
+  payload: {
+    title: string;
+    description: string | null;
+    scheduled_date: string;
+    due_date: string;
+    due_time: string | null;
+    department: string | null;
+    status: Task["status"];
+    priority: Task["priority"];
+    calendar_sync_enabled: boolean;
+  },
+  accessToken: string,
+) {
+  const response = await fetch("/api/planner/tasks", {
+    method: id ? "PUT" : "POST",
+    headers: {
+      "authorization": `Bearer ${accessToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ id, ...payload }),
+  });
+
+  if (!response.ok) throw new Error(await response.text());
+
+  const result = (await response.json()) as { task?: Pick<Task, "id"> };
+  if (!result.task?.id) throw new Error("Event save did not return an id.");
+  return result.task;
 }
 
 function buildIcsContent(tasks: Task[]) {

@@ -54,6 +54,9 @@ export default {
       if (url.pathname === "/api/planner/imported-events") {
         return await handlePlannerImportedEvents(url);
       }
+      if (url.pathname === "/api/planner/tasks") {
+        return await handlePlannerTaskSave(request);
+      }
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);
@@ -124,6 +127,57 @@ async function handlePlannerIcsExport(url: URL) {
   }
 }
 
+async function handlePlannerTaskSave(request: Request) {
+  if (!["POST", "PUT"].includes(request.method)) {
+    return new Response("Method not allowed", {
+      status: 405,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  try {
+    const user = await authenticatedPlannerUser(request);
+    const body = (await request.json()) as PlannerTaskSaveRequest;
+    const payload = plannerTaskPayload(body);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+    const shouldUpdate = request.method === "PUT" && body.id && !body.id.startsWith("ics-");
+
+    if (shouldUpdate) {
+      const existing = await getPlannerTaskForUser(body.id!, user.id);
+      if (!existing) {
+        return new Response("Planner task not found", {
+          status: 404,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        });
+      }
+
+      const { data, error } = await supabaseAdmin
+        .from("tasks")
+        .update(payload)
+        .eq("id", body.id)
+        .select(plannerTaskSelect)
+        .single();
+      if (error) throw error;
+      return Response.json({ task: data }, { status: 200 });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("tasks")
+      .insert({ ...payload, created_by: user.id })
+      .select(plannerTaskSelect)
+      .single();
+    if (error) throw error;
+    return Response.json({ task: data }, { status: 201 });
+  } catch (error) {
+    console.error("[Planner Task Save] failed", error);
+    return new Response(error instanceof Error ? error.message : "Planner task save failed", {
+      status: error instanceof PlannerAuthError ? error.status : 500,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+}
+
 async function handlePlannerImportedEvents(url: URL) {
   try {
     const token = url.searchParams.get("token")?.trim();
@@ -174,6 +228,33 @@ type PlannerIcsTask = {
   [key: string]: string | null;
 };
 
+type PlannerTaskSaveRequest = {
+  id?: string | null;
+  title?: string | null;
+  description?: string | null;
+  department?: string | null;
+  scheduled_date?: string | null;
+  due_date?: string | null;
+  due_time?: string | null;
+  status?: string | null;
+  priority?: string | null;
+  calendar_sync_enabled?: boolean | null;
+};
+
+type AuthenticatedPlannerUser = {
+  id: string;
+  canManageAllTasks: boolean;
+};
+
+class PlannerAuthError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 type ImportedIcsEvent = {
   uid: string | null;
   summary: string | null;
@@ -192,7 +273,72 @@ const plannerDateFields = [
   "event_date",
 ] as const;
 const plannerTaskSelect =
-  "id,title,description,department,scheduled_date,due_date,due_time,updated_at,created_at,status";
+  "id,title,description,department,scheduled_date,due_date,due_time,updated_at,created_at,status,priority,calendar_sync_enabled,calendar_sync_status,google_calendar_event_id,calendar_event_html_link,calendar_last_synced_at,calendar_sync_error,calendar_retry_count,assignee_id,completed_at,created_by";
+
+async function authenticatedPlannerUser(request: Request): Promise<AuthenticatedPlannerUser> {
+  const authorization = request.headers.get("authorization") ?? "";
+  const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (!token) throw new PlannerAuthError("Sign in required to save planner task", 401);
+
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const { data, error } = await supabaseAdmin.auth.getUser(token);
+  if (error || !data.user) {
+    throw new PlannerAuthError(error?.message || "Invalid planner session", 401);
+  }
+
+  return {
+    id: data.user.id,
+    canManageAllTasks: await userCanViewAllTasks(data.user.id),
+  };
+}
+
+function plannerTaskPayload(body: PlannerTaskSaveRequest) {
+  const title = body.title?.trim();
+  if (!title) throw new PlannerAuthError("Event title required", 400);
+
+  const scheduledDate = normalizeDateKey(body.scheduled_date) ?? normalizeDateKey(body.due_date);
+  if (!scheduledDate) throw new PlannerAuthError("Planner event date required", 400);
+
+  return {
+    title,
+    description: body.description?.trim() || null,
+    department: body.department?.trim() || null,
+    scheduled_date: scheduledDate,
+    due_date: scheduledDate,
+    due_time: normalizeTime(body.due_time) || null,
+    status: normalizeTaskStatus(body.status),
+    priority: normalizeTaskPriority(body.priority),
+    calendar_sync_enabled: body.calendar_sync_enabled === true,
+  };
+}
+
+async function getPlannerTaskForUser(taskId: string, userId: string) {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const canManageAllTasks = await userCanViewAllTasks(userId);
+  let query = supabaseAdmin
+    .from("tasks")
+    .select("id,created_by,assignee_id")
+    .eq("id", taskId)
+    .maybeSingle();
+
+  if (!canManageAllTasks) {
+    query = query.or(`created_by.eq.${userId},assignee_id.eq.${userId}`);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return data;
+}
+
+function normalizeTaskStatus(value: string | null | undefined) {
+  if (["todo", "in_progress", "blocked", "done"].includes(value ?? "")) return value;
+  return "in_progress";
+}
+
+function normalizeTaskPriority(value: string | null | undefined) {
+  if (["low", "medium", "high", "urgent"].includes(value ?? "")) return value;
+  return "medium";
+}
 
 async function fetchPlannerTasksForCalendar(userId: string): Promise<PlannerIcsTask[]> {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
