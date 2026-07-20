@@ -3,7 +3,11 @@ import type { Task } from "@/hooks/useData";
 export const PLANNER_MEETING_TYPE_LINE = "Type: Meeting";
 
 export function isPlannerMeetingTask(task: Task) {
-  return !!dateKeyForTask(task) && task.description?.toLowerCase().includes("type: meeting");
+  return isPlannerTask(task);
+}
+
+export function isPlannerTask(task: Task) {
+  return !!dateKeyForTask(task);
 }
 
 export function isTaskItem(task: Task) {

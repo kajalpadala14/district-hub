@@ -161,7 +161,9 @@ async function fetchPlannerTaskRows(
     .order("due_date", { ascending: true, nullsFirst: false });
 
   if (!canViewAllPlannerTasks) {
-    query = query.eq("created_by", userId);
+    query = query.or(
+      `created_by.eq.${userId},assigned_to.eq.${userId},assignee_id.eq.${userId},backend_assigned_to.eq.${userId}`,
+    );
   }
 
   const { data, error } = await query;
@@ -228,7 +230,9 @@ async function explainEmptyPlannerCalendar(userId: string) {
     .or("scheduled_date.not.is.null,due_date.not.is.null");
 
   if (!canViewAllPlannerTasks) {
-    allDatedQuery = allDatedQuery.eq("created_by", userId);
+    allDatedQuery = allDatedQuery.or(
+      `created_by.eq.${userId},assigned_to.eq.${userId},assignee_id.eq.${userId},backend_assigned_to.eq.${userId}`,
+    );
   }
 
   const { count: coreDatedCount, error: datedError } = await allDatedQuery;
@@ -238,7 +242,7 @@ async function explainEmptyPlannerCalendar(userId: string) {
     "No planner calendar events were exported.",
     "Reason: the subscription token is valid, but no tasks in this planner scope have a usable planner date.",
     "Planner table: public.tasks. Token table: public.planner_settings.",
-    `Calendar scope: ${canViewAllPlannerTasks ? "admin/manager, all planner tasks" : "tasks created by or assigned to the token owner"}.`,
+    `Calendar scope: ${canViewAllPlannerTasks ? "admin/manager, all tasks" : "tasks created by or assigned to the token owner"}.`,
     `Tasks in scope: ${rows.length}.`,
     `Tasks with scheduled_date or due_date in scope: ${coreDatedCount ?? 0}.`,
     `Tasks with any detected planner date (${plannerDateFields.join(", ")}): ${datedCount}.`,
