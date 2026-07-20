@@ -95,10 +95,10 @@ async function handlePlannerIcsExport(url: URL) {
       });
     }
 
-    const plannerTasks = [
-      ...(await fetchPlannerTasksForCalendar(settings.user_id)),
-      ...(await fetchImportedPlannerEvents(settings.apple_ics_url)),
-    ];
+    const importedPlannerTasks = await fetchImportedPlannerEvents(settings.apple_ics_url);
+    const plannerTasks = importedPlannerTasks.length
+      ? importedPlannerTasks
+      : await fetchPlannerTasksForCalendar(settings.user_id);
 
     if (!plannerTasks.length) {
       const diagnostic = await explainEmptyPlannerCalendar(settings.user_id);

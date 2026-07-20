@@ -106,8 +106,13 @@ function PlannerPage() {
 
   const days = useMemo(() => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)), [weekStart]);
   const meetings = useMemo(
-    () => [...tasks, ...importedIcsTasks].filter(isPlannerMeetingTask),
-    [tasks, importedIcsTasks],
+    () => {
+      if (plannerSettings.appleIcsUrl.trim() && importedIcsTasks.length) {
+        return importedIcsTasks.filter(isPlannerMeetingTask);
+      }
+      return tasks.filter(isPlannerMeetingTask);
+    },
+    [plannerSettings.appleIcsUrl, tasks, importedIcsTasks],
   );
   const slots = useMemo(
     () => buildPlannerSlots(plannerSettings, meetings, days),
