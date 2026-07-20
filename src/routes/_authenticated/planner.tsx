@@ -96,12 +96,17 @@ function PlannerPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [plannerSettings, setPlannerSettings] = useState<PlannerSettings>(defaultPlannerSettings);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [importedIcsTasks, setImportedIcsTasks] = useState<Task[]>([]);
+  const [importedIcsRefreshKey, setImportedIcsRefreshKey] = useState(0);
 
   const days = useMemo(() => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)), [weekStart]);
   const slots = useMemo(() => buildPlannerSlots(plannerSettings), [plannerSettings]);
   const icsHttpsUrl = useMemo(() => buildPlannerIcsUrl(plannerSettings.token, "https"), [plannerSettings.token]);
   const icsWebcalUrl = useMemo(() => buildPlannerIcsUrl(plannerSettings.token, "webcal"), [plannerSettings.token]);
-  const meetings = useMemo(() => tasks.filter(isPlannerMeetingTask), [tasks]);
+  const meetings = useMemo(
+    () => [...tasks, ...importedIcsTasks].filter(isPlannerMeetingTask),
+    [tasks, importedIcsTasks],
+  );
 
   useEffect(() => {
     if (!user?.id) return;
@@ -143,6 +148,39 @@ function PlannerPage() {
     };
   }, [user?.id]);
 
+  useEffect(() => {
+    if (!plannerSettings.token) {
+      setImportedIcsTasks([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadImportedEvents = async () => {
+      try {
+        const response = await fetch(
+          `/api/planner/imported-events?token=${encodeURIComponent(plannerSettings.token)}`,
+          { headers: { accept: "application/json" } },
+        );
+
+        if (!response.ok) throw new Error(await response.text());
+
+        const payload = (await response.json()) as { events?: ImportedPlannerEvent[] };
+        if (!cancelled) {
+          setImportedIcsTasks((payload.events ?? []).map(importedPlannerEventToTask));
+        }
+      } catch (error) {
+        console.warn("[Planner ICS Import] failed", error);
+        if (!cancelled) setImportedIcsTasks([]);
+      }
+    };
+
+    void loadImportedEvents();
+    return () => {
+      cancelled = true;
+    };
+  }, [plannerSettings.token, importedIcsRefreshKey]);
+
   const tasksByDay = useMemo(() => {
     const map = new Map<string, Task[]>();
     for (const day of days) map.set(format(day, "yyyy-MM-dd"), []);
@@ -176,6 +214,7 @@ function PlannerPage() {
 
       if (error) throw error;
       setPlannerSettings(plannerSettingsFromRow(data));
+      setImportedIcsRefreshKey((value) => value + 1);
       toast.success("Planner settings saved in Supabase");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Planner settings save failed");
@@ -202,6 +241,7 @@ function PlannerPage() {
 
       if (error) throw error;
       setPlannerSettings(plannerSettingsFromRow(data));
+      setImportedIcsRefreshKey((value) => value + 1);
       toast.success("Planner token rotated in Supabase");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Planner token update failed");
@@ -268,7 +308,15 @@ function PlannerPage() {
             <MessageCircle className="h-4 w-4" />
             Day Message
           </Button>
-          <Button variant="ghost" size="icon" aria-label="Refresh planner" onClick={() => void refreshTasks()}>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Refresh planner"
+            onClick={() => {
+              void refreshTasks();
+              setImportedIcsRefreshKey((value) => value + 1);
+            }}
+          >
             <RefreshCw className="h-4 w-4" />
           </Button>
           <Button variant="outline" size="sm" className="bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary" onClick={() => setShowSettings((value) => !value)}>
@@ -752,6 +800,45 @@ type PlannerSettingsRow = {
   apple_ics_url: string;
   subscription_token: string;
 };
+
+type ImportedPlannerEvent = {
+  id: string;
+  title: string | null;
+  description: string | null;
+  department: string | null;
+  scheduled_date: string | null;
+  due_date: string | null;
+  due_time: string | null;
+  updated_at: string | null;
+  created_at: string | null;
+  status: string | null;
+};
+
+function importedPlannerEventToTask(event: ImportedPlannerEvent): Task {
+  return {
+    id: event.id,
+    title: event.title || "Imported calendar event",
+    description: event.description,
+    department: event.department,
+    scheduled_date: event.scheduled_date,
+    due_date: event.due_date,
+    due_time: event.due_time,
+    status: event.status === "blocked" ? "blocked" : "in_progress",
+    priority: "medium",
+    created_by: "ics-import",
+    created_at: event.created_at ?? new Date(0).toISOString(),
+    updated_at: event.updated_at ?? event.created_at ?? new Date(0).toISOString(),
+    assignee_id: null,
+    completed_at: null,
+    calendar_event_html_link: null,
+    calendar_last_synced_at: null,
+    calendar_retry_count: 0,
+    calendar_sync_enabled: false,
+    calendar_sync_error: null,
+    calendar_sync_status: "not_synced",
+    google_calendar_event_id: null,
+  };
+}
 
 function plannerSettingsFromRow(row: PlannerSettingsRow): PlannerSettings {
   return {

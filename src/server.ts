@@ -51,6 +51,9 @@ export default {
       if (url.pathname === "/api/planner/export.ics") {
         return await handlePlannerIcsExport(url);
       }
+      if (url.pathname === "/api/planner/imported-events") {
+        return await handlePlannerImportedEvents(url);
+      }
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);
@@ -77,7 +80,7 @@ async function handlePlannerIcsExport(url: URL) {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { data: settings, error: settingsError } = await supabaseAdmin
       .from("planner_settings")
-      .select("user_id")
+      .select("user_id,apple_ics_url")
       .eq("subscription_token", token)
       .maybeSingle();
 
@@ -89,7 +92,10 @@ async function handlePlannerIcsExport(url: URL) {
       });
     }
 
-    const plannerTasks = await fetchPlannerTasksForCalendar(settings.user_id);
+    const plannerTasks = [
+      ...(await fetchPlannerTasksForCalendar(settings.user_id)),
+      ...(await fetchImportedPlannerEvents(settings.apple_ics_url)),
+    ];
 
     if (!plannerTasks.length) {
       const diagnostic = await explainEmptyPlannerCalendar(settings.user_id);
@@ -118,6 +124,42 @@ async function handlePlannerIcsExport(url: URL) {
   }
 }
 
+async function handlePlannerImportedEvents(url: URL) {
+  try {
+    const token = url.searchParams.get("token")?.trim();
+    if (!token) {
+      return new Response("Planner subscription token is required", {
+        status: 400,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: settings, error: settingsError } = await supabaseAdmin
+      .from("planner_settings")
+      .select("apple_ics_url")
+      .eq("subscription_token", token)
+      .maybeSingle();
+
+    if (settingsError) throw settingsError;
+    if (!settings) {
+      return new Response("Planner subscription token not found", {
+        status: 404,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+
+    const events = await fetchImportedPlannerEvents(settings.apple_ics_url);
+    return Response.json({ events }, { headers: { "cache-control": "no-store" } });
+  } catch (error) {
+    console.error("[Planner Imported Events] failed", error);
+    return new Response("Planner imported events fetch failed", {
+      status: 500,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+}
+
 type PlannerIcsTask = {
   id: string;
   title: string | null;
@@ -130,6 +172,16 @@ type PlannerIcsTask = {
   created_at: string | null;
   status: string | null;
   [key: string]: string | null;
+};
+
+type ImportedIcsEvent = {
+  uid: string | null;
+  summary: string | null;
+  description: string | null;
+  location: string | null;
+  status: string | null;
+  dtstart: string | null;
+  dtend: string | null;
 };
 
 const plannerDateFields = [
@@ -205,6 +257,186 @@ async function detectExtraPlannerDateFields() {
   }
 
   return detectedFields;
+}
+
+async function fetchImportedPlannerEvents(
+  icsUrl: string | null | undefined,
+): Promise<PlannerIcsTask[]> {
+  const feedUrl = normalizeExternalIcsUrl(icsUrl);
+  if (!feedUrl) return [];
+
+  const response = await fetch(feedUrl, {
+    headers: {
+      accept: "text/calendar,text/plain,*/*",
+      "user-agent": "District Governance Planner ICS Import",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Imported ICS fetch failed: ${response.status} ${response.statusText}`);
+  }
+
+  const ics = await response.text();
+  return parseImportedIcsEvents(ics)
+    .map(importedIcsEventToPlannerTask)
+    .filter((task) => getPlannerTaskDate(task));
+}
+
+function normalizeExternalIcsUrl(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const urlText = trimmed.replace(/^webcal:/i, "https:");
+
+  try {
+    const url = new URL(urlText);
+    if (!["https:", "http:"].includes(url.protocol)) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function parseImportedIcsEvents(ics: string): ImportedIcsEvent[] {
+  const lines = unfoldIcsLines(ics);
+  const events: ImportedIcsEvent[] = [];
+  let current: ImportedIcsEvent | null = null;
+
+  for (const line of lines) {
+    if (line === "BEGIN:VEVENT") {
+      current = {
+        uid: null,
+        summary: null,
+        description: null,
+        location: null,
+        status: null,
+        dtstart: null,
+        dtend: null,
+      };
+      continue;
+    }
+
+    if (line === "END:VEVENT") {
+      if (current) events.push(current);
+      current = null;
+      continue;
+    }
+
+    if (!current) continue;
+
+    const separatorIndex = line.indexOf(":");
+    if (separatorIndex < 0) continue;
+
+    const name = line.slice(0, separatorIndex).split(";")[0].toUpperCase();
+    const value = unescapeIcs(line.slice(separatorIndex + 1));
+
+    if (name === "UID") current.uid = value;
+    if (name === "SUMMARY") current.summary = value;
+    if (name === "DESCRIPTION") current.description = value;
+    if (name === "LOCATION") current.location = value;
+    if (name === "STATUS") current.status = value;
+    if (name === "DTSTART") current.dtstart = value;
+    if (name === "DTEND") current.dtend = value;
+  }
+
+  return events;
+}
+
+function unfoldIcsLines(ics: string) {
+  const rawLines = ics.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const lines: string[] = [];
+
+  for (const rawLine of rawLines) {
+    if (/^[ \t]/.test(rawLine) && lines.length) {
+      lines[lines.length - 1] += rawLine.slice(1);
+    } else {
+      lines.push(rawLine.trimEnd());
+    }
+  }
+
+  return lines;
+}
+
+function importedIcsEventToPlannerTask(event: ImportedIcsEvent): PlannerIcsTask {
+  const start = parseIcsStart(event.dtstart);
+  const status = event.status?.toUpperCase() === "CANCELLED" ? "blocked" : "in_progress";
+
+  return {
+    id: `ics-${hashText(event.uid || `${event.summary ?? "event"}-${event.dtstart ?? ""}`)}`,
+    title: event.summary || "Imported calendar event",
+    description: event.description,
+    department: event.location,
+    scheduled_date: start?.date ?? null,
+    due_date: start?.date ?? null,
+    due_time: start?.time ?? null,
+    updated_at: null,
+    created_at: null,
+    status,
+  };
+}
+
+function parseIcsStart(value: string | null) {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const dateOnly = trimmed.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (dateOnly) {
+    return { date: `${dateOnly[1]}-${dateOnly[2]}-${dateOnly[3]}`, time: null };
+  }
+
+  const dateTime = trimmed.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?(Z)?$/);
+  if (!dateTime) return null;
+
+  if (dateTime[7]) {
+    const date = new Date(
+      Date.UTC(
+        Number(dateTime[1]),
+        Number(dateTime[2]) - 1,
+        Number(dateTime[3]),
+        Number(dateTime[4]),
+        Number(dateTime[5]),
+        Number(dateTime[6] ?? "0"),
+      ),
+    );
+    const kolkata = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    })
+      .formatToParts(date)
+      .reduce<Record<string, string>>((parts, part) => {
+        if (part.type !== "literal") parts[part.type] = part.value;
+        return parts;
+      }, {});
+
+    return {
+      date: `${kolkata.year}-${kolkata.month}-${kolkata.day}`,
+      time: `${kolkata.hour}:${kolkata.minute}`,
+    };
+  }
+
+  return {
+    date: `${dateTime[1]}-${dateTime[2]}-${dateTime[3]}`,
+    time: `${dateTime[4]}:${dateTime[5]}`,
+  };
+}
+
+function unescapeIcs(value: string) {
+  return value
+    .replace(/\\n/gi, "\n")
+    .replace(/\\,/g, ",")
+    .replace(/\\;/g, ";")
+    .replace(/\\\\/g, "\\");
+}
+
+function hashText(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = Math.imul(31, hash) + value.charCodeAt(index);
+  }
+  return Math.abs(hash).toString(36);
 }
 
 async function userCanViewAllTasks(userId: string) {
