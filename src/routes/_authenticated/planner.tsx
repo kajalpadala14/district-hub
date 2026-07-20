@@ -39,14 +39,11 @@ import { useDepartments, useProfiles, useTasks, type Task } from "@/hooks/useDat
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { requestGoogleCalendarConnection, syncTaskCalendar } from "@/lib/googleCalendar";
-import { createLocalTask, isLocalTaskMode, LOCAL_USER_ID, updateLocalTask } from "@/lib/localTaskStore";
 import { dateKeyForTask, isPlannerMeetingTask, PLANNER_MEETING_TYPE_LINE } from "@/lib/taskClassification";
 
 export const Route = createFileRoute("/_authenticated/planner")({
   component: PlannerPage,
 });
-
-const fallbackUserId = LOCAL_USER_ID;
 
 type PlannerSlot = { range: string; label: string | null; tall?: boolean };
 type PlannerSettings = {
@@ -68,10 +65,8 @@ const defaultPlannerSettings: PlannerSettings = {
   lunchStart: "13:30",
   lunchEnd: "14:30",
   appleIcsUrl: "",
-  token: "Dn9hJA0",
+  token: "",
 };
-
-const PLANNER_SETTINGS_KEY = "governance.planner.settings";
 
 const eventColors = [
   "bg-primary",
@@ -99,15 +94,54 @@ function PlannerPage() {
   const [defaultDate, setDefaultDate] = useState<string | null>(null);
   const [defaultTime, setDefaultTime] = useState("10:00 AM");
   const [showSettings, setShowSettings] = useState(false);
-  const [plannerSettings, setPlannerSettings] = useState<PlannerSettings>(() => loadPlannerSettings());
+  const [plannerSettings, setPlannerSettings] = useState<PlannerSettings>(defaultPlannerSettings);
+  const [settingsSaving, setSettingsSaving] = useState(false);
 
   const days = useMemo(() => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)), [weekStart]);
   const slots = useMemo(() => buildPlannerSlots(plannerSettings), [plannerSettings]);
   const icsHttpsUrl = useMemo(() => buildPlannerIcsUrl(plannerSettings.token, "https"), [plannerSettings.token]);
   const icsWebcalUrl = useMemo(() => buildPlannerIcsUrl(plannerSettings.token, "webcal"), [plannerSettings.token]);
-  const currentUserId = user?.id ?? profiles[0]?.id ?? fallbackUserId;
-  const localMode = isLocalTaskMode(user?.id);
   const meetings = useMemo(() => tasks.filter(isPlannerMeetingTask), [tasks]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    let cancelled = false;
+
+    const loadSettings = async () => {
+      const { data, error } = await supabase
+        .from("planner_settings")
+        .select("*")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+
+      if (data) {
+        if (!cancelled) setPlannerSettings(plannerSettingsFromRow(data));
+        return;
+      }
+
+      const { data: created, error: createError } = await supabase
+        .from("planner_settings")
+        .insert({ user_id: user.id })
+        .select("*")
+        .single();
+
+      if (createError) {
+        toast.error(createError.message);
+        return;
+      }
+      if (!cancelled) setPlannerSettings(plannerSettingsFromRow(created));
+    };
+
+    void loadSettings();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
 
   const tasksByDay = useMemo(() => {
     const map = new Map<string, Task[]>();
@@ -126,47 +160,54 @@ function PlannerPage() {
     setDialogOpen(true);
   };
 
-  const connectGoogleCalendar = async () => {
+  const savePlannerSettings = async () => {
+    if (!user?.id) {
+      toast.error("Sign in required to save planner settings");
+      return;
+    }
+
+    setSettingsSaving(true);
     try {
-      await requestGoogleCalendarConnection();
+      const { data, error } = await supabase
+        .from("planner_settings")
+        .upsert(plannerSettingsToRow(user.id, plannerSettings), { onConflict: "user_id" })
+        .select("*")
+        .single();
+
+      if (error) throw error;
+      setPlannerSettings(plannerSettingsFromRow(data));
+      toast.success("Planner settings saved in Supabase");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Google Calendar connection failed");
+      toast.error(error instanceof Error ? error.message : "Planner settings save failed");
+    } finally {
+      setSettingsSaving(false);
     }
   };
 
-  const connectOutlookCalendar = async () => {
-    try {
-      const authUrl = await calendarApiRequest("/calendar/connect/outlook", {
-        method: "POST",
-        body: JSON.stringify({ return_to: window.location.href }),
-      });
-      window.location.assign(authUrl.authUrl);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Outlook connection failed");
+  const rotateToken = async () => {
+    if (!user?.id) {
+      toast.error("Sign in required to rotate planner token");
+      return;
     }
-  };
 
-  const disconnectCalendars = async () => {
-    try {
-      await calendarApiRequest("/calendar/disconnect/google", { method: "POST" });
-      await calendarApiRequest("/calendar/disconnect/outlook", { method: "POST" });
-      toast.success("Calendar integrations disconnected");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Calendar disconnect failed");
-    }
-  };
-
-  const savePlannerSettings = () => {
-    window.localStorage.setItem(PLANNER_SETTINGS_KEY, JSON.stringify(plannerSettings));
-    toast.success("Planner settings saved");
-  };
-
-  const rotateToken = () => {
-    const token = Math.random().toString(36).slice(2, 10);
+    const token = createPlannerToken();
     const next = { ...plannerSettings, token };
-    setPlannerSettings(next);
-    window.localStorage.setItem(PLANNER_SETTINGS_KEY, JSON.stringify(next));
-    toast.success("Planner token rotated");
+    setSettingsSaving(true);
+    try {
+      const { data, error } = await supabase
+        .from("planner_settings")
+        .upsert(plannerSettingsToRow(user.id, next), { onConflict: "user_id" })
+        .select("*")
+        .single();
+
+      if (error) throw error;
+      setPlannerSettings(plannerSettingsFromRow(data));
+      toast.success("Planner token rotated in Supabase");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Planner token update failed");
+    } finally {
+      setSettingsSaving(false);
+    }
   };
 
   const copyText = async (label: string, value: string) => {
@@ -250,10 +291,7 @@ function PlannerPage() {
           onSave={savePlannerSettings}
           onCopy={copyText}
           onRotate={rotateToken}
-          onConnectGoogle={connectGoogleCalendar}
-          onConnectOutlook={connectOutlookCalendar}
-          onDisconnect={disconnectCalendars}
-          localMode={localMode}
+          saving={settingsSaving}
         />
       )}
 
@@ -348,8 +386,6 @@ function PlannerPage() {
       <EventDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
-        currentUserId={currentUserId}
-        localMode={localMode}
         event={editing}
         defaultDate={defaultDate}
         defaultTime={defaultTime}
@@ -368,64 +404,57 @@ function PlannerSettingsPanel({
   onSave,
   onCopy,
   onRotate,
-  onConnectGoogle,
-  onConnectOutlook,
-  onDisconnect,
-  localMode,
+  saving,
 }: {
   settings: PlannerSettings;
   httpsUrl: string;
   webcalUrl: string;
   onChange: (settings: PlannerSettings) => void;
-  onSave: () => void;
+  onSave: () => void | Promise<void>;
   onCopy: (label: string, value: string) => Promise<void>;
-  onRotate: () => void;
-  onConnectGoogle: () => void;
-  onConnectOutlook: () => void;
-  onDisconnect: () => void;
-  localMode: boolean;
+  onRotate: () => void | Promise<void>;
+  saving: boolean;
 }) {
   const update = (key: keyof PlannerSettings, value: string) => onChange({ ...settings, [key]: value });
 
   return (
-    <section className="rounded-2xl border bg-card p-5 shadow-elevated">
-      <div className="grid gap-3 lg:grid-cols-[repeat(6,minmax(120px,1fr))_minmax(260px,2fr)]">
+    <section className="min-w-0 rounded-lg border bg-card p-4 shadow-elevated sm:p-5">
+      <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[repeat(6,minmax(110px,1fr))_minmax(240px,2fr)]">
         <PlannerSettingInput label="Day Start" type="time" value={settings.dayStart} onChange={(value) => update("dayStart", value)} />
         <PlannerSettingInput label="Day End" type="time" value={settings.dayEnd} onChange={(value) => update("dayEnd", value)} />
         <PlannerSettingInput label="Slot (Min)" type="number" value={settings.slotMin} onChange={(value) => update("slotMin", value)} />
         <PlannerSettingInput label="Gap (Min)" type="number" value={settings.gapMin} onChange={(value) => update("gapMin", value)} />
         <PlannerSettingInput label="Lunch Start" type="time" value={settings.lunchStart} onChange={(value) => update("lunchStart", value)} />
         <PlannerSettingInput label="Lunch End" type="time" value={settings.lunchEnd} onChange={(value) => update("lunchEnd", value)} />
-        <PlannerSettingInput label="Apple ICS URL" value={settings.appleIcsUrl} onChange={(value) => update("appleIcsUrl", value)} />
+        <div className="min-w-0 sm:col-span-2 lg:col-span-3 2xl:col-span-1">
+          <PlannerSettingInput label="Apple ICS URL" value={settings.appleIcsUrl} onChange={(value) => update("appleIcsUrl", value)} />
+        </div>
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-3">
-        <Button onClick={onSave}>Save Settings</Button>
-        <Button variant="outline" onClick={onConnectGoogle}>Connect Google</Button>
-        <Button variant="outline" disabled={localMode} title={localMode ? "Sign in required" : undefined} onClick={onConnectOutlook}>Connect Outlook</Button>
-        <Button variant="ghost" disabled={localMode} title={localMode ? "Sign in required" : undefined} onClick={onDisconnect}>Disconnect Calendar</Button>
-        <p className="text-sm text-muted-foreground">
+      <div className="mt-4 flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+        <Button className="w-full sm:w-auto" onClick={onSave} disabled={saving}>{saving ? "Saving..." : "Save Settings"}</Button>
+        <p className="min-w-0 text-sm text-muted-foreground">
           Default: 10:00-18:00, 30 min slots, 15 min break, lunch 13:30-14:30.
         </p>
       </div>
 
-      <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <div className="rounded-xl border border-success/30 bg-success/5 p-4">
+      <div className="mt-4 grid min-w-0 gap-4 lg:grid-cols-2">
+        <div className="min-w-0 rounded-lg border border-success/30 bg-success/5 p-4">
           <p className="text-xs font-bold uppercase tracking-wide text-success">Dashboard to Apple (HTTPS)</p>
-          <Input className="mt-2 bg-background" value={httpsUrl} readOnly />
-          <div className="mt-3 flex gap-2">
-            <Button size="sm" className="bg-success text-success-foreground hover:bg-success/90" onClick={() => onCopy("HTTPS ICS URL", httpsUrl)}>
+          <Input className="mt-2 min-w-0 bg-background text-xs sm:text-sm" value={httpsUrl} readOnly />
+          <div className="mt-3 grid gap-2 sm:flex sm:flex-wrap">
+            <Button size="sm" className="w-full bg-success text-success-foreground hover:bg-success/90 sm:w-auto" disabled={!httpsUrl} onClick={() => onCopy("HTTPS ICS URL", httpsUrl)}>
               Copy HTTPS
             </Button>
-            <Button size="sm" variant="outline" onClick={onRotate}>Rotate Token</Button>
+            <Button size="sm" variant="outline" className="w-full sm:w-auto" disabled={saving} onClick={onRotate}>Rotate Token</Button>
           </div>
         </div>
 
-        <div className="rounded-xl border border-primary/25 bg-primary/5 p-4">
+        <div className="min-w-0 rounded-lg border border-primary/25 bg-primary/5 p-4">
           <p className="text-xs font-bold uppercase tracking-wide text-primary">Apple Subscription (WEBCAL)</p>
-          <Input className="mt-2 bg-background" value={webcalUrl} readOnly />
-          <div className="mt-3 flex gap-2">
-            <Button size="sm" onClick={() => onCopy("WEBCAL URL", webcalUrl)}>Copy WEBCAL</Button>
+          <Input className="mt-2 min-w-0 bg-background text-xs sm:text-sm" value={webcalUrl} readOnly />
+          <div className="mt-3 grid gap-2 sm:flex sm:flex-wrap">
+            <Button size="sm" className="w-full sm:w-auto" disabled={!webcalUrl} onClick={() => onCopy("WEBCAL URL", webcalUrl)}>Copy WEBCAL</Button>
           </div>
         </div>
       </div>
@@ -445,9 +474,9 @@ function PlannerSettingInput({
   onChange: (value: string) => void;
 }) {
   return (
-    <div className="space-y-1.5">
+    <div className="min-w-0 space-y-1.5">
       <FieldLabel>{label}</FieldLabel>
-      <Input type={type} value={value} onChange={(event) => onChange(event.target.value)} className="bg-background" />
+      <Input type={type} value={value} onChange={(event) => onChange(event.target.value)} className="min-w-0 bg-background" />
     </div>
   );
 }
@@ -455,8 +484,6 @@ function PlannerSettingInput({
 function EventDialog({
   open,
   onOpenChange,
-  currentUserId,
-  localMode,
   event,
   defaultDate,
   defaultTime,
@@ -465,8 +492,6 @@ function EventDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  currentUserId: string;
-  localMode: boolean;
   event: Task | null;
   defaultDate: string | null;
   defaultTime: string;
@@ -500,9 +525,9 @@ function EventDialog({
       venue: "",
       attendees: "",
       notes: event?.description ?? "",
-      calendar_sync_enabled: localMode ? false : event?.calendar_sync_enabled ?? false,
+      calendar_sync_enabled: event?.calendar_sync_enabled ?? false,
     });
-  }, [event, defaultDate, defaultTime, open, localMode]);
+  }, [event, defaultDate, defaultTime, open]);
 
   const submit = async (submitEvent: React.FormEvent<HTMLFormElement>) => {
     submitEvent.preventDefault();
@@ -533,24 +558,11 @@ function EventDialog({
       department: form.department === "None" ? null : form.department,
       status: form.status === "Cancelled" ? "blocked" as const : form.status === "Confirmed" ? "in_progress" as const : "todo" as const,
       priority: "medium" as const,
-      calendar_sync_enabled: localMode ? false : form.calendar_sync_enabled,
+      calendar_sync_enabled: form.calendar_sync_enabled,
     };
 
     setSaving(true);
     try {
-      if (localMode) {
-        if (event) {
-          updateLocalTask(event.id, payload);
-          toast.success("Event updated");
-        } else {
-          createLocalTask({ ...payload, created_by: currentUserId });
-          toast.success("Event saved");
-        }
-        await onSaved();
-        onOpenChange(false);
-        return;
-      }
-
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
       if (sessionError) throw sessionError;
       if (!sessionData.session?.user.id) throw new Error("Please sign in before saving planner events.");
@@ -707,13 +719,12 @@ function EventDialog({
 
           <label className="flex cursor-pointer items-center gap-3 rounded-lg border bg-background px-3 py-3 text-sm font-medium shadow-sm">
             <Checkbox
-              checked={!localMode && form.calendar_sync_enabled}
-              disabled={localMode}
+              checked={form.calendar_sync_enabled}
               onCheckedChange={(checked) => setForm({ ...form, calendar_sync_enabled: checked === true })}
             />
             <span className="flex items-center gap-2">
               <CalendarDays className="h-4 w-4 text-primary" />
-              {localMode ? "Google Calendar sync requires sign in" : "Sync with Google Calendar"}
+              Sync with Google Calendar
             </span>
           </label>
 
@@ -747,14 +758,56 @@ function FieldLabel({ children, htmlFor }: { children: React.ReactNode; htmlFor?
   );
 }
 
-function loadPlannerSettings(): PlannerSettings {
-  if (typeof window === "undefined") return defaultPlannerSettings;
-  try {
-    const saved = window.localStorage.getItem(PLANNER_SETTINGS_KEY);
-    return saved ? { ...defaultPlannerSettings, ...JSON.parse(saved) } : defaultPlannerSettings;
-  } catch {
-    return defaultPlannerSettings;
+type PlannerSettingsRow = {
+  day_start: string;
+  day_end: string;
+  slot_min: number;
+  gap_min: number;
+  lunch_start: string;
+  lunch_end: string;
+  apple_ics_url: string;
+  subscription_token: string;
+};
+
+function plannerSettingsFromRow(row: PlannerSettingsRow): PlannerSettings {
+  return {
+    dayStart: timeInputValue(row.day_start),
+    dayEnd: timeInputValue(row.day_end),
+    slotMin: String(row.slot_min),
+    gapMin: String(row.gap_min),
+    lunchStart: timeInputValue(row.lunch_start),
+    lunchEnd: timeInputValue(row.lunch_end),
+    appleIcsUrl: row.apple_ics_url ?? "",
+    token: row.subscription_token,
+  };
+}
+
+function plannerSettingsToRow(userId: string, settings: PlannerSettings) {
+  return {
+    user_id: userId,
+    day_start: settings.dayStart || defaultPlannerSettings.dayStart,
+    day_end: settings.dayEnd || defaultPlannerSettings.dayEnd,
+    slot_min: Number(settings.slotMin) || Number(defaultPlannerSettings.slotMin),
+    gap_min: Number(settings.gapMin) || Number(defaultPlannerSettings.gapMin),
+    lunch_start: settings.lunchStart || defaultPlannerSettings.lunchStart,
+    lunch_end: settings.lunchEnd || defaultPlannerSettings.lunchEnd,
+    apple_ics_url: settings.appleIcsUrl,
+    subscription_token: settings.token || createPlannerToken(),
+  };
+}
+
+function timeInputValue(value: string) {
+  return value.slice(0, 5);
+}
+
+function createPlannerToken() {
+  const bytes = new Uint8Array(18);
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
   }
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function buildPlannerSlots(settings: PlannerSettings): PlannerSlot[] {
@@ -795,8 +848,9 @@ function buildPlannerSlots(settings: PlannerSettings): PlannerSlot[] {
 }
 
 function buildPlannerIcsUrl(token: string, scheme: "https" | "webcal") {
-  if (typeof window === "undefined") return `/api/planner/export.ics?token=${token}`;
-  const url = new URL(`/api/planner/export.ics?token=${token}`, window.location.origin);
+  if (!token) return "";
+  if (typeof window === "undefined") return `/api/planner/export.ics?token=${encodeURIComponent(token)}`;
+  const url = new URL(`/api/planner/export.ics?token=${encodeURIComponent(token)}`, window.location.origin);
   if (scheme === "webcal") url.protocol = "webcal:";
   return url.toString();
 }
@@ -849,25 +903,6 @@ function toIcsDateTime(date: Date) {
 
 function escapeIcs(value: string) {
   return value.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/,/g, "\\,").replace(/;/g, "\\;");
-}
-
-async function calendarApiRequest(path: string, init: RequestInit = {}) {
-  const token = window.localStorage.getItem("governance.api.token");
-  if (!token) {
-    throw new Error("Backend JWT token missing. Login to the backend API before using Outlook/disconnect actions.");
-  }
-  const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      ...(init.headers ?? {}),
-    },
-  });
-  const payload = response.status === 204 ? null : await response.json();
-  if (!response.ok) throw new Error(payload?.error?.message ?? payload?.message ?? "Calendar API request failed");
-  return payload;
 }
 
 function toDisplayDate(dateKey: string) {

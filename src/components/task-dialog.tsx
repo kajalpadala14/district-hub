@@ -27,7 +27,6 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { useDepartments, type Profile, type Task, type TaskPriority, type TaskStatus } from "@/hooks/useData";
 import { deleteTaskCalendarEvent, syncTaskCalendar } from "@/lib/googleCalendar";
-import { createLocalTask, listLocalProfiles, updateLocalTask } from "@/lib/localTaskStore";
 
 interface TaskDialogProps {
   open: boolean;
@@ -82,7 +81,7 @@ export function TaskDialog({
     calendar_sync_enabled: false,
   });
 
-  const employeeOptions = useMemo(() => mergeEmployees(employees, listLocalProfiles()), [employees, open]);
+  const employeeOptions = useMemo(() => mergeEmployees(employees), [employees, open]);
   const { departments } = useDepartments(employeeOptions.map((employee) => employee.department));
 
   useEffect(() => {
@@ -156,28 +155,7 @@ export function TaskDialog({
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
       if (sessionError) throw sessionError;
       const userId = sessionData.session?.user.id;
-      const localAssignee = parsed.data.assignee_id ? isLocalEmployeeId(parsed.data.assignee_id) : false;
-
-      if (!userId || localAssignee || isLocalTaskId(task?.id)) {
-        if (isEdit && task) {
-          const updated = updateLocalTask(task.id, {
-            ...parsed.data,
-            completed_at: parsed.data.status === "done" ? new Date().toISOString() : null,
-          });
-          if (!updated) throw new Error("Local task could not be updated.");
-          await onSaved?.();
-          toast.success("Task updated");
-        } else {
-          createLocalTask({
-            ...parsed.data,
-            created_by: userId ?? currentUserId,
-          });
-          await onSaved?.();
-          toast.success("Task created");
-        }
-        onOpenChange(false);
-        return;
-      }
+      if (!userId) throw new Error("Please sign in before saving tasks.");
 
       const payload = {
         ...parsed.data,
@@ -422,23 +400,10 @@ export function TaskDialog({
   );
 }
 
-function mergeEmployees(primary: Profile[], fallback: Profile[]) {
+function mergeEmployees(primary: Profile[]) {
   const byId = new Map<string, Profile>();
-  for (const employee of [...fallback, ...primary]) byId.set(employee.id, employee);
+  for (const employee of primary) byId.set(employee.id, employee);
   return Array.from(byId.values()).sort((a, b) => (a.full_name || a.email).localeCompare(b.full_name || b.email));
-}
-
-function isLocalEmployeeId(id: string) {
-  return listLocalProfiles().some((employee) => employee.id === id);
-}
-
-function isLocalTaskId(id: string | undefined) {
-  if (!id) return false;
-  try {
-    return window.localStorage.getItem("governance.local.tasks")?.includes(id) ?? false;
-  } catch {
-    return false;
-  }
 }
 
 function FieldLabel({ children, htmlFor }: { children: React.ReactNode; htmlFor?: string }) {

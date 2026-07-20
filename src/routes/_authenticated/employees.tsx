@@ -34,15 +34,6 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { useDepartments, useProfiles, useTasks, useUserRoles, type Department, type Profile } from "@/hooks/useData";
 import { isDashboardUserProfile, usernameFromProfile } from "@/lib/profileClassification";
-import {
-  createLocalDepartment,
-  createLocalProfile,
-  deleteLocalDepartment,
-  deleteLocalProfile,
-  listLocalProfiles,
-  updateLocalDepartment,
-  updateLocalProfile,
-} from "@/lib/localTaskStore";
 
 export const Route = createFileRoute("/_authenticated/employees")({
   component: EmployeesPage,
@@ -122,13 +113,8 @@ function EmployeesPage() {
 
   const handleDelete = async (profile: Profile) => {
     const { data: sessionData } = await supabase.auth.getSession();
-    if (!sessionData.session || isLocalProfile(profile)) {
-      if (!deleteLocalProfile(profile.id)) {
-        toast.error("Default local user cannot be deleted");
-        return;
-      }
-      await refresh();
-      toast.success("Employee removed");
+    if (!sessionData.session) {
+      toast.error("Please sign in before deleting employees.");
       return;
     }
 
@@ -330,11 +316,7 @@ function DepartmentsDialog({
 
     const { data: sessionData } = await supabase.auth.getSession();
     if (!sessionData.session) {
-      if (editing) updateLocalDepartment(editing.id, clean);
-      else createLocalDepartment(clean);
-      await onSaved();
-      toast.success(editing ? "Department updated" : "Department added");
-      reset();
+      toast.error("Please sign in before saving departments.");
       return;
     }
 
@@ -359,10 +341,8 @@ function DepartmentsDialog({
     }
 
     const { data: sessionData } = await supabase.auth.getSession();
-    if (!sessionData.session || department.id.startsWith("local-department-")) {
-      deleteLocalDepartment(department.id);
-      await onSaved();
-      toast.success("Department removed");
+    if (!sessionData.session) {
+      toast.error("Please sign in before deleting departments.");
       return;
     }
 
@@ -569,28 +549,19 @@ function EmployeeDialog({
       toast.error(sessionError.message);
       return;
     }
-    const backendMode = !!sessionData.session;
-
-    if (!employee) {
-      if (backendMode) {
-        const { error } = await supabase.from("profiles").insert(payload);
-        if (error) {
-          toast.error(error.message);
-          return;
-        }
-      } else {
-        createLocalProfile(payload);
-      }
-      await onSaved();
-      toast.success("Employee added");
-      onOpenChange(false);
+    if (!sessionData.session) {
+      toast.error("Please sign in before saving employees.");
       return;
     }
 
-    if (!backendMode || isLocalProfile(employee)) {
-      updateLocalProfile(employee.id, payload);
+    if (!employee) {
+      const { error } = await supabase.from("profiles").insert(payload);
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
       await onSaved();
-      toast.success("Employee updated");
+      toast.success("Employee added");
       onOpenChange(false);
       return;
     }
@@ -677,10 +648,6 @@ function EmployeeDialog({
 
 function displayUsername(profile: Profile) {
   return usernameFromProfile(profile);
-}
-
-function isLocalProfile(profile: Profile) {
-  return listLocalProfiles().some((item) => item.id === profile.id);
 }
 
 function emailForEmployee(name: string, username: string) {

@@ -78,7 +78,6 @@ import {
   syncTaskCalendar,
 } from "@/lib/googleCalendar";
 import { isTaskItem, PLANNER_MEETING_TYPE_LINE } from "@/lib/taskClassification";
-import { createLocalTask, deleteLocalTask, isLocalTaskMode, LOCAL_USER_ID, logLocalTaskAudit, updateLocalTask } from "@/lib/localTaskStore";
 import { cn } from "@/lib/utils";
 import { buildTaskWhatsAppMessage, buildWhatsAppUrl } from "@/lib/whatsapp";
 
@@ -90,8 +89,6 @@ type QuickFilter = "all" | "today" | "important";
 type CommentsFilter = "all" | "with-comments" | "without-comments";
 type SortMode = "latest" | "deadline" | "priority";
 type BulkSelectValue = "keep" | "none" | string;
-
-const fallbackUserId = LOCAL_USER_ID;
 
 const statusLabels: Record<TaskStatus, string> = {
   todo: "Pending",
@@ -216,8 +213,7 @@ function TasksManagementPage() {
     { label: "Important Tasks", value: important, icon: Star, tone: "text-warning-foreground", bg: "bg-warning/25" },
   ];
 
-  const currentUserId = user?.id ?? profiles[0]?.id ?? fallbackUserId;
-  const localMode = isLocalTaskMode(user?.id);
+  const currentUserId = user?.id ?? "";
   const selectedTasks = useMemo(
     () => filtered.map((item) => item.task).filter((task) => selectedIds.includes(task.id)),
     [filtered, selectedIds],
@@ -276,15 +272,11 @@ function TasksManagementPage() {
 
     setBulkSaving(true);
     try {
-      if (localMode) {
-        for (const task of selectedTasks) updateLocalTask(task.id, updates);
-        await logLocalTaskAudit();
-      } else {
-        const { error } = await supabase.from("tasks").update(updates).in("id", selectedIds);
-        if (error) throw error;
-        await Promise.all(selectedTasks.map((task) => logTaskAudit(task.id, currentUserId, "task_updated", { bulk: true, updates })));
-        await refreshTasks();
-      }
+      if (!currentUserId) throw new Error("Please sign in before updating tasks.");
+      const { error } = await supabase.from("tasks").update(updates).in("id", selectedIds);
+      if (error) throw error;
+      await Promise.all(selectedTasks.map((task) => logTaskAudit(task.id, currentUserId, "task_updated", { bulk: true, updates })));
+      await refreshTasks();
 
       toast.success(`${selectedTasks.length} task${selectedTasks.length === 1 ? "" : "s"} updated`);
       resetBulkFields();
@@ -299,22 +291,18 @@ function TasksManagementPage() {
     if (selectedTasks.length === 0) return;
     setBulkSaving(true);
     try {
-      if (localMode) {
-        for (const task of selectedTasks) deleteLocalTask(task.id);
-        await logLocalTaskAudit();
-      } else {
-        for (const task of selectedTasks) {
-          if (task.google_calendar_event_id) {
-            await deleteTaskCalendarEvent(task.id).catch((error) => {
-              console.warn("[Bulk Delete] calendar delete failed", error);
-            });
-          }
+      if (!currentUserId) throw new Error("Please sign in before deleting tasks.");
+      for (const task of selectedTasks) {
+        if (task.google_calendar_event_id) {
+          await deleteTaskCalendarEvent(task.id).catch((error) => {
+            console.warn("[Bulk Delete] calendar delete failed", error);
+          });
         }
-        await Promise.all(selectedTasks.map((task) => logTaskAudit(task.id, currentUserId, "task_deleted", { bulk: true, title: task.title })));
-        const { error } = await supabase.from("tasks").delete().in("id", selectedIds);
-        if (error) throw error;
-        await refreshTasks();
       }
+      await Promise.all(selectedTasks.map((task) => logTaskAudit(task.id, currentUserId, "task_deleted", { bulk: true, title: task.title })));
+      const { error } = await supabase.from("tasks").delete().in("id", selectedIds);
+      if (error) throw error;
+      await refreshTasks();
 
       toast.success(`${selectedTasks.length} task${selectedTasks.length === 1 ? "" : "s"} deleted`);
       setSelectedIds([]);
@@ -327,10 +315,8 @@ function TasksManagementPage() {
   };
 
   const handleComplete = async (task: Task) => {
-    if (localMode) {
-      updateLocalTask(task.id, { status: "done", completed_at: new Date().toISOString() });
-      await logLocalTaskAudit();
-      toast.success("Task marked complete");
+    if (!currentUserId) {
+      toast.error("Please sign in before updating tasks.");
       return;
     }
 
@@ -348,10 +334,8 @@ function TasksManagementPage() {
   };
 
   const handleDelete = async (task: Task) => {
-    if (localMode) {
-      deleteLocalTask(task.id);
-      await logLocalTaskAudit();
-      toast.success("Task deleted");
+    if (!currentUserId) {
+      toast.error("Please sign in before deleting tasks.");
       return;
     }
 
@@ -375,10 +359,8 @@ function TasksManagementPage() {
       return;
     }
 
-    if (localMode) {
-      updateLocalTask(task.id, { due_date: dueDate });
-      await logLocalTaskAudit();
-      toast.success("Deadline updated");
+    if (!currentUserId) {
+      toast.error("Please sign in before updating tasks.");
       return;
     }
 
@@ -394,10 +376,8 @@ function TasksManagementPage() {
   };
 
   const handleMarkImportant = async (task: Task) => {
-    if (localMode) {
-      updateLocalTask(task.id, { priority: "urgent" });
-      await logLocalTaskAudit();
-      toast.success("Task marked important");
+    if (!currentUserId) {
+      toast.error("Please sign in before updating tasks.");
       return;
     }
 
@@ -422,14 +402,8 @@ function TasksManagementPage() {
       ? task.description
       : [task.description || task.title, note].filter(Boolean).join("\n\n");
 
-    if (localMode) {
-      updateLocalTask(task.id, {
-        description,
-        scheduled_date: today,
-        status: task.status === "done" ? task.status : "in_progress",
-      });
-      await logLocalTaskAudit();
-      toast.success("Added to Field Visit Notepad");
+    if (!currentUserId) {
+      toast.error("Please sign in before updating tasks.");
       return;
     }
 
@@ -803,7 +777,6 @@ function TasksManagementPage() {
         department={meetingTask?.department ?? "None (General)"}
         departmentOptions={departmentOptions.map((department) => department.name)}
         currentUserId={currentUserId}
-        localMode={localMode}
         open={!!meetingTask}
         onOpenChange={(open) => {
           if (!open) setMeetingTask(null);
@@ -1210,7 +1183,6 @@ function ScheduleMeetingSheet({
   department,
   departmentOptions,
   currentUserId,
-  localMode,
   open,
   onOpenChange,
   onSaved,
@@ -1221,7 +1193,6 @@ function ScheduleMeetingSheet({
   department: string;
   departmentOptions: string[];
   currentUserId: string;
-  localMode: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void | Promise<void>;
@@ -1281,15 +1252,12 @@ function ScheduleMeetingSheet({
     };
 
     try {
-      if (localMode) {
-        createLocalTask({ ...payload, created_by: currentUserId });
-      } else {
-        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-        if (sessionError) throw sessionError;
-        const createdBy = sessionData.session?.user.id ?? currentUserId;
-        const { error } = await supabase.from("tasks").insert({ ...payload, created_by: createdBy });
-        if (error) throw error;
-      }
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw sessionError;
+      const createdBy = sessionData.session?.user.id ?? currentUserId;
+      if (!createdBy) throw new Error("Please sign in before saving planner meetings.");
+      const { error } = await supabase.from("tasks").insert({ ...payload, created_by: createdBy });
+      if (error) throw error;
       await onSaved();
       toast.success("Department meeting added to planner");
       onOpenChange(false);

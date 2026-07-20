@@ -1,14 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Database } from "@/integrations/supabase/types";
-import {
-  listLocalDepartments,
-  listLocalProfiles,
-  listLocalTasks,
-  subscribeLocalDepartments,
-  subscribeLocalProfiles,
-  subscribeLocalTasks,
-} from "@/lib/localTaskStore";
 
 export type Task = Database["public"]["Tables"]["tasks"]["Row"];
 export type Profile = Database["public"]["Tables"]["profiles"]["Row"];
@@ -27,7 +19,7 @@ export function useTasks() {
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       if (!sessionData.session) {
-        setTasks(listLocalTasks());
+        setTasks([]);
         setLoading(false);
         return;
       }
@@ -52,9 +44,6 @@ export function useTasks() {
     let mounted = true;
     void load();
 
-    const unsubscribeLocal = subscribeLocalTasks(() => {
-      if (mounted) void load();
-    });
     const channel = supabase
       .channel("tasks-changes")
       .on(
@@ -68,7 +57,6 @@ export function useTasks() {
 
     return () => {
       mounted = false;
-      unsubscribeLocal();
       supabase.removeChannel(channel);
     };
   }, []);
@@ -82,10 +70,9 @@ export function useProfiles() {
 
   const load = useCallback(async () => {
     try {
-      const local = listLocalProfiles();
       const { data: sessionData } = await supabase.auth.getSession();
       if (!sessionData.session) {
-        setProfiles(local);
+        setProfiles([]);
         setLoading(false);
         return;
       }
@@ -98,7 +85,7 @@ export function useProfiles() {
       setProfiles(data ?? []);
       setLoading(false);
     } catch {
-      setProfiles(listLocalProfiles());
+      setProfiles([]);
       setLoading(false);
     }
   }, []);
@@ -107,9 +94,6 @@ export function useProfiles() {
     let mounted = true;
     void load();
 
-    const unsubscribeLocalProfiles = subscribeLocalProfiles(() => {
-      if (mounted) void load();
-    });
     const channel = supabase
       .channel("profiles-changes")
       .on(
@@ -121,7 +105,6 @@ export function useProfiles() {
 
     return () => {
       mounted = false;
-      unsubscribeLocalProfiles();
       supabase.removeChannel(channel);
     };
   }, [load]);
@@ -135,7 +118,6 @@ export function useDepartments(extraNames: Array<string | null | undefined> = []
   const channelNameRef = useRef(`departments-changes-${crypto.randomUUID()}`);
 
   const load = useCallback(async () => {
-    const local = listLocalDepartments();
     const extras = extraNames
       .map((name) => name?.trim())
       .filter((name): name is string => !!name)
@@ -149,7 +131,7 @@ export function useDepartments(extraNames: Array<string | null | undefined> = []
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       if (!sessionData.session) {
-        setDepartments(mergeDepartments([...local, ...extras]));
+        setDepartments(mergeDepartments(extras));
         setLoading(false);
         return;
       }
@@ -159,10 +141,10 @@ export function useDepartments(extraNames: Array<string | null | undefined> = []
         .select("*")
         .order("name", { ascending: true });
       if (error) throw error;
-      setDepartments(mergeDepartments([...(data ?? []), ...local, ...extras]));
+      setDepartments(mergeDepartments([...(data ?? []), ...extras]));
       setLoading(false);
     } catch {
-      setDepartments(mergeDepartments([...local, ...extras]));
+      setDepartments(mergeDepartments(extras));
       setLoading(false);
     }
   }, [extraNames.join("|")]);
@@ -174,9 +156,6 @@ export function useDepartments(extraNames: Array<string | null | undefined> = []
     };
     void loadIfMounted();
 
-    const unsubscribeLocalDepartments = subscribeLocalDepartments(() => {
-      if (mounted) void load();
-    });
     const channel = supabase
       .channel(channelNameRef.current)
       .on(
@@ -188,18 +167,11 @@ export function useDepartments(extraNames: Array<string | null | undefined> = []
 
     return () => {
       mounted = false;
-      unsubscribeLocalDepartments();
       supabase.removeChannel(channel);
     };
   }, [load]);
 
   return { departments, loading, refresh: load };
-}
-
-function mergeProfiles(remote: Profile[], local: Profile[]) {
-  const byId = new Map<string, Profile>();
-  for (const profile of [...local, ...remote]) byId.set(profile.id, profile);
-  return Array.from(byId.values()).sort((a, b) => (a.full_name || a.email).localeCompare(b.full_name || b.email));
 }
 
 function mergeDepartments(items: Department[]) {

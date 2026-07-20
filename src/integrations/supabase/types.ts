@@ -74,6 +74,48 @@ export type Database = {
         }
         Relationships: []
       }
+      planner_settings: {
+        Row: {
+          apple_ics_url: string
+          created_at: string
+          day_end: string
+          day_start: string
+          gap_min: number
+          lunch_end: string
+          lunch_start: string
+          slot_min: number
+          subscription_token: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          apple_ics_url?: string
+          created_at?: string
+          day_end?: string
+          day_start?: string
+          gap_min?: number
+          lunch_end?: string
+          lunch_start?: string
+          slot_min?: number
+          subscription_token?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          apple_ics_url?: string
+          created_at?: string
+          day_end?: string
+          day_start?: string
+          gap_min?: number
+          lunch_end?: string
+          lunch_start?: string
+          slot_min?: number
+          subscription_token?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       tasks: {
         Row: {
           assignee_id: string | null
