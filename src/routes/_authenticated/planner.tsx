@@ -38,7 +38,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useDepartments, useProfiles, useTasks, type Task } from "@/hooks/useData";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
-import { syncTaskCalendar } from "@/lib/googleCalendar";
+import { requestGoogleCalendarConnection, syncTaskCalendar } from "@/lib/googleCalendar";
 import { dateKeyForTask, isPlannerMeetingTask, PLANNER_MEETING_TYPE_LINE } from "@/lib/taskClassification";
 
 export const Route = createFileRoute("/_authenticated/planner")({
@@ -78,6 +78,8 @@ const eventColors = [
   "bg-cyan-500",
   "bg-orange-400",
 ] as const;
+
+const pendingPlannerGoogleSyncKey = "district-hub:pending-planner-google-sync";
 
 function PlannerPage() {
   const { user } = useAuth();
@@ -168,6 +170,25 @@ function PlannerPage() {
       cancelled = true;
     };
   }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id || typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("googleCalendar") !== "connected") return;
+
+    const pendingTaskId = window.localStorage.getItem(pendingPlannerGoogleSyncKey);
+    if (!pendingTaskId) return;
+
+    window.localStorage.removeItem(pendingPlannerGoogleSyncKey);
+    void syncTaskCalendar(pendingTaskId)
+      .then(async () => {
+        await refreshTasks();
+        toast.success("Google Calendar connected and event synced");
+      })
+      .catch((error) => {
+        toast.error(error instanceof Error ? error.message : "Google Calendar sync failed");
+      });
+  }, [user?.id, refreshTasks]);
 
   useEffect(() => {
     if (!plannerSettings.token) {
@@ -664,6 +685,14 @@ function EventDialog({
 
       if (form.calendar_sync_enabled) {
         try {
+          const connected = await isGoogleCalendarConnected(sessionData.session.user.id);
+          if (!connected) {
+            window.localStorage.setItem(pendingPlannerGoogleSyncKey, savedTask.id);
+            toast.message("Event saved. Connect Google Calendar to finish sync.");
+            await requestGoogleCalendarConnection(window.location.href);
+            return;
+          }
+
           await syncTaskCalendar(savedTask.id);
           await onSaved();
           toast.success("Google Calendar synced");
@@ -1082,6 +1111,21 @@ async function savePlannerTask(
   const result = (await response.json()) as { task?: Pick<Task, "id"> };
   if (!result.task?.id) throw new Error("Event save did not return an id.");
   return result.task;
+}
+
+async function isGoogleCalendarConnected(userId: string) {
+  const { data, error } = await supabase
+    .from("google_calendar_connection_status")
+    .select("user_id, expires_at")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) {
+    console.warn("[Planner Google Calendar Status] failed", error);
+    return false;
+  }
+
+  return !!data;
 }
 
 function buildIcsContent(tasks: Task[]) {
