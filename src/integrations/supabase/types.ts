@@ -8,6 +8,60 @@ export type Database = {
   };
   public: {
     Tables: {
+      calendar_events: {
+        Row: {
+          created_at: string;
+          external_event_id: string | null;
+          external_event_url: string | null;
+          id: string;
+          last_synced_at: string | null;
+          metadata: Json;
+          payload_hash: string | null;
+          provider: string;
+          retry_count: number;
+          source_id: string;
+          source_type: string;
+          sync_error: string | null;
+          sync_status: string;
+          updated_at: string;
+          user_id: string | null;
+        };
+        Insert: {
+          created_at?: string;
+          external_event_id?: string | null;
+          external_event_url?: string | null;
+          id?: string;
+          last_synced_at?: string | null;
+          metadata?: Json;
+          payload_hash?: string | null;
+          provider: string;
+          retry_count?: number;
+          source_id: string;
+          source_type: string;
+          sync_error?: string | null;
+          sync_status?: string;
+          updated_at?: string;
+          user_id?: string | null;
+        };
+        Update: {
+          created_at?: string;
+          external_event_id?: string | null;
+          external_event_url?: string | null;
+          id?: string;
+          last_synced_at?: string | null;
+          metadata?: Json;
+          payload_hash?: string | null;
+          provider?: string;
+          retry_count?: number;
+          source_id?: string;
+          source_type?: string;
+          sync_error?: string | null;
+          sync_status?: string;
+          updated_at?: string;
+          user_id?: string | null;
+        };
+        Relationships: [];
+      };
       departments: {
         Row: {
           created_at: string;

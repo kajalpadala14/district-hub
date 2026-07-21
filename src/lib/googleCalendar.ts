@@ -6,9 +6,12 @@ export type CalendarSyncStatus = Task["calendar_sync_status"];
 export async function requestGoogleCalendarConnection(returnTo = window.location.href) {
   await ensureCalendarAuthSession();
 
-  const { data, error } = await supabase.functions.invoke<{ authUrl: string }>("google-calendar-auth-url", {
-    body: { returnTo },
-  });
+  const { data, error } = await supabase.functions.invoke<{ authUrl: string }>(
+    "google-calendar-auth-url",
+    {
+      body: { returnTo },
+    },
+  );
   if (error) {
     throw new Error(
       [
@@ -40,10 +43,17 @@ async function ensureCalendarAuthSession() {
 }
 
 export async function syncTaskCalendar(taskId: string, retry = false) {
-  const { error } = await supabase.functions.invoke("google-calendar-sync", {
+  const { data, error } = await supabase.functions.invoke<{
+    ok?: boolean;
+    connectedOwners?: string[];
+    skippedOwners?: string[];
+    error?: string;
+  }>("google-calendar-sync", {
     body: { taskId, retry },
   });
   if (error) throw new Error(error.message);
+  if (data?.error) throw new Error(data.error);
+  return data;
 }
 
 export async function deleteTaskCalendarEvent(taskId: string) {

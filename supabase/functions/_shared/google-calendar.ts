@@ -60,7 +60,11 @@ export async function assertTaskAccess(userId: string, task: TaskRow) {
 }
 
 export async function loadTask(taskId: string) {
-  const { data, error } = await serviceClient.from("tasks").select("*").eq("id", taskId).maybeSingle();
+  const { data, error } = await serviceClient
+    .from("tasks")
+    .select("*")
+    .eq("id", taskId)
+    .maybeSingle();
   if (error) throw error;
   if (!data) throw new HttpError("Task not found", 404);
   return { ...(data as TaskRow), source_type: "task" as const };
@@ -95,6 +99,10 @@ export async function loadCalendarSource(sourceId: string) {
   } satisfies TaskRow;
 }
 
+function googleCalendarId() {
+  return Deno.env.get("GOOGLE_CALENDAR_ID") || "primary";
+}
+
 export async function loadConnection(userId: string) {
   const { data, error } = await serviceClient
     .from("google_calendar_connections")
@@ -109,7 +117,8 @@ export async function refreshAccessToken(connection: ConnectionRow) {
   if (connection.expires_at && new Date(connection.expires_at).getTime() > Date.now() + 60_000) {
     return connection.access_token;
   }
-  if (!connection.refresh_token) throw new HttpError("Google refresh token is missing. Reconnect Google Calendar.", 400);
+  if (!connection.refresh_token)
+    throw new HttpError("Google refresh token is missing. Reconnect Google Calendar.", 400);
 
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -123,7 +132,8 @@ export async function refreshAccessToken(connection: ConnectionRow) {
   });
 
   const payload = await response.json();
-  if (!response.ok) throw new HttpError(payload.error_description ?? "Google token refresh failed", 400);
+  if (!response.ok)
+    throw new HttpError(payload.error_description ?? "Google token refresh failed", 400);
 
   const expiresAt = new Date(Date.now() + Number(payload.expires_in ?? 3600) * 1000).toISOString();
   await serviceClient
@@ -141,11 +151,25 @@ export async function refreshAccessToken(connection: ConnectionRow) {
 
 export async function upsertCalendarEvent(task: TaskRow, ownerUserId: string, accessToken: string) {
   const event = buildEvent(task);
-  const existing = await loadTaskCalendarEvent(task.id, ownerUserId);
-  const eventId = existing?.google_calendar_event_id ?? (ownerUserId === task.created_by ? task.google_calendar_event_id : null);
+  const existing = await loadExistingCalendarEvent(task, ownerUserId);
+  const eventId =
+    existing?.google_calendar_event_id ??
+    (ownerUserId === task.created_by ? task.google_calendar_event_id : null);
+  const calendarId = googleCalendarId();
   const url = eventId
-    ? `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`
-    : "https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all";
+    ? `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}?sendUpdates=all`
+    : `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?sendUpdates=all`;
+
+  console.info("[Planner Google Calendar Sync] Google API request", {
+    sourceType: task.source_type ?? "task",
+    sourceId: task.id,
+    ownerUserId,
+    calendarId,
+    method: eventId ? "PUT" : "POST",
+    eventId: eventId ?? null,
+    start: event.start,
+    end: event.end,
+  });
 
   const response = await fetch(url, {
     method: eventId ? "PUT" : "POST",
@@ -156,7 +180,19 @@ export async function upsertCalendarEvent(task: TaskRow, ownerUserId: string, ac
     body: JSON.stringify(event),
   });
   const payload = await response.json();
-  if (!response.ok) throw new HttpError(payload.error?.message ?? "Google Calendar event sync failed", response.status);
+  console.info("[Planner Google Calendar Sync] Google API response", {
+    sourceType: task.source_type ?? "task",
+    sourceId: task.id,
+    status: response.status,
+    ok: response.ok,
+    googleEventId: typeof payload.id === "string" ? payload.id : null,
+    error: payload.error?.message ?? null,
+  });
+  if (!response.ok)
+    throw new HttpError(
+      payload.error?.message ?? "Google Calendar event sync failed",
+      response.status,
+    );
 
   return {
     id: payload.id as string,
@@ -174,29 +210,40 @@ export async function deleteCalendarEvent(eventId: string, accessToken: string) 
   );
   if (!response.ok && response.status !== 404 && response.status !== 410) {
     const payload = await response.json().catch(() => ({}));
-    throw new HttpError(payload.error?.message ?? "Google Calendar event delete failed", response.status);
+    throw new HttpError(
+      payload.error?.message ?? "Google Calendar event delete failed",
+      response.status,
+    );
   }
 }
 
-export async function saveCalendarSuccess(task: TaskRow, userId: string, event: { id: string; htmlLink: string | null }) {
+export async function saveCalendarSuccess(
+  task: TaskRow,
+  userId: string,
+  event: { id: string; htmlLink: string | null },
+) {
   const now = new Date().toISOString();
   if (task.source_type === "planner_event") {
-    await serviceClient.from("calendar_events").upsert({
-      source_type: "planner_event",
-      source_id: task.id,
-      provider: "google",
-      user_id: userId,
-      external_event_id: event.id,
-      external_event_url: event.htmlLink,
-      sync_status: "synced",
-      sync_error: null,
-      retry_count: 0,
-      last_synced_at: now,
-    }, { onConflict: "source_type,source_id,provider,user_id" });
+    const { error } = await serviceClient.from("calendar_events").upsert(
+      {
+        source_type: "planner_event",
+        source_id: task.id,
+        provider: "google",
+        user_id: userId,
+        external_event_id: event.id,
+        external_event_url: event.htmlLink,
+        sync_status: "synced",
+        sync_error: null,
+        retry_count: 0,
+        last_synced_at: now,
+      },
+      { onConflict: "source_type,source_id,provider,user_id" },
+    );
+    if (error) throw error;
     return;
   }
 
-  await serviceClient.from("task_calendar_events").upsert({
+  const { error: taskEventError } = await serviceClient.from("task_calendar_events").upsert({
     task_id: task.id,
     user_id: userId,
     google_calendar_event_id: event.id,
@@ -206,9 +253,10 @@ export async function saveCalendarSuccess(task: TaskRow, userId: string, event: 
     calendar_sync_error: null,
     calendar_retry_count: 0,
   });
+  if (taskEventError) throw taskEventError;
 
   if (userId === task.created_by || !task.google_calendar_event_id) {
-    await serviceClient
+    const { error: taskUpdateError } = await serviceClient
       .from("tasks")
       .update({
         google_calendar_event_id: event.id,
@@ -219,24 +267,29 @@ export async function saveCalendarSuccess(task: TaskRow, userId: string, event: 
         calendar_retry_count: 0,
       })
       .eq("id", task.id);
+    if (taskUpdateError) throw taskUpdateError;
   }
 }
 
 export async function saveCalendarFailure(task: TaskRow, message: string) {
   if (task.source_type === "planner_event") {
-    await serviceClient.from("calendar_events").upsert({
-      source_type: "planner_event",
-      source_id: task.id,
-      provider: "google",
-      user_id: task.created_by,
-      sync_status: "failed",
-      sync_error: message,
-      retry_count: (task.calendar_retry_count ?? 0) + 1,
-    }, { onConflict: "source_type,source_id,provider,user_id" });
+    const { error } = await serviceClient.from("calendar_events").upsert(
+      {
+        source_type: "planner_event",
+        source_id: task.id,
+        provider: "google",
+        user_id: task.created_by,
+        sync_status: "failed",
+        sync_error: message,
+        retry_count: (task.calendar_retry_count ?? 0) + 1,
+      },
+      { onConflict: "source_type,source_id,provider,user_id" },
+    );
+    if (error) throw error;
     return;
   }
 
-  await serviceClient
+  const { error } = await serviceClient
     .from("tasks")
     .update({
       calendar_sync_status: "failed",
@@ -244,6 +297,7 @@ export async function saveCalendarFailure(task: TaskRow, message: string) {
       calendar_retry_count: (task.calendar_retry_count ?? 0) + 1,
     })
     .eq("id", task.id);
+  if (error) throw error;
 }
 
 export async function logAudit(
@@ -262,10 +316,16 @@ export async function logAudit(
   const modern = await serviceClient.from("task_audit_logs").insert(modernPayload);
   if (!modern.error) return;
 
-  const withoutTask = await serviceClient.from("task_audit_logs").insert({ ...modernPayload, task_id: null });
+  const withoutTask = await serviceClient
+    .from("task_audit_logs")
+    .insert({ ...modernPayload, task_id: null });
   if (!withoutTask.error) return;
 
-  console.warn("[Task Audit] modern audit insert failed, trying legacy shape", modern.error, withoutTask.error);
+  console.warn(
+    "[Task Audit] modern audit insert failed, trying legacy shape",
+    modern.error,
+    withoutTask.error,
+  );
   const legacy = await serviceClient.from("task_audit_logs").insert({
     task_id: taskId,
     actor_id: actorId,
@@ -342,11 +402,26 @@ function normalizeCalendarTime(value: string | null | undefined) {
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
-async function loadTaskCalendarEvent(taskId: string, userId: string) {
+async function loadExistingCalendarEvent(task: TaskRow, userId: string) {
+  if (task.source_type === "planner_event") {
+    const { data, error } = await serviceClient
+      .from("calendar_events")
+      .select("external_event_id")
+      .eq("source_type", "planner_event")
+      .eq("source_id", task.id)
+      .eq("provider", "google")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (error) throw error;
+    return data?.external_event_id
+      ? { google_calendar_event_id: data.external_event_id as string }
+      : null;
+  }
+
   const { data, error } = await serviceClient
     .from("task_calendar_events")
     .select("google_calendar_event_id")
-    .eq("task_id", taskId)
+    .eq("task_id", task.id)
     .eq("user_id", userId)
     .maybeSingle();
   if (error) throw error;

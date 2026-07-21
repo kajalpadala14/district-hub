@@ -765,6 +765,7 @@ function EventDialog({
 }) {
   const isEditMode = mode === "edit" && !!event && !event.id.startsWith("ics-");
   const [saving, setSaving] = useState(false);
+  const [, setGoogleCalendarConnected] = useState(false);
   const [form, setForm] = useState({
     title: "",
     date: "",
@@ -794,6 +795,37 @@ function EventDialog({
       calendar_sync_enabled: isEditMode ? (event?.calendar_sync_enabled ?? false) : false,
     });
   }, [event, defaultDate, defaultTime, open, isEditMode]);
+
+  useEffect(() => {
+    if (!open || isEditMode) return;
+    let cancelled = false;
+
+    const loadGoogleCalendarStatus = async () => {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !sessionData.session?.user.id) {
+        if (!cancelled) setGoogleCalendarConnected(false);
+        return;
+      }
+
+      const connected = await isGoogleCalendarConnected(sessionData.session.user.id);
+      if (cancelled) return;
+      setGoogleCalendarConnected(connected);
+      setForm((current) => ({
+        ...current,
+        calendar_sync_enabled: connected,
+      }));
+      console.info("[Planner Google Calendar Sync] connection status loaded", {
+        userId: sessionData.session.user.id,
+        connected,
+        defaultSyncEnabled: connected,
+      });
+    };
+
+    void loadGoogleCalendarStatus();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, isEditMode]);
 
   const submit = async (submitEvent: React.FormEvent<HTMLFormElement>) => {
     submitEvent.preventDefault();
@@ -867,7 +899,12 @@ function EventDialog({
             return;
           }
 
-          await syncTaskCalendar(savedTask.id);
+          console.info("[Planner Google Calendar Sync] triggering Edge Function", {
+            plannerEventId: savedTask.id,
+            selectedSlot: payload.due_time,
+          });
+          const syncResult = await syncTaskCalendar(savedTask.id);
+          console.info("[Planner Google Calendar Sync] Edge Function completed", syncResult);
           await onSaved();
           toast.success("Google Calendar synced");
         } catch (syncError) {
@@ -1281,6 +1318,16 @@ function taskForPlannerSlot(dayTasks: Task[], slot: PlannerSlot, slotIndex: numb
 
   const timedTask = dayTasks.find((task) => {
     const taskTime = normalizeTaskTimeMinutes(task.due_time);
+    console.info("[Planner Position Debug] slot match", {
+      taskId: task.id,
+      title: task.title,
+      rawTime: task.due_time,
+      normalizedMinutes: taskTime,
+      slot: slot.range,
+      slotStart,
+      slotEnd,
+      matches: taskTime !== null && taskTime >= slotStart && taskTime < slotEnd,
+    });
     return taskTime !== null && taskTime >= slotStart && taskTime < slotEnd;
   });
   if (timedTask) return timedTask;
@@ -1298,8 +1345,8 @@ function comparePlannerTasks(a: Task, b: Task) {
 
 function normalizeTaskTimeMinutes(value: string | null | undefined) {
   if (!value) return null;
-  const normalized = toTimeInput(value);
-  if (!/^\d{2}:\d{2}$/.test(normalized)) return null;
+  const normalized = parseTimeInput(value);
+  if (!normalized) return null;
   return minutesFromTime(normalized);
 }
 
@@ -1509,14 +1556,28 @@ function getEventTime(dueTime: string | null | undefined, fallback: string) {
 }
 
 function toTimeInput(value: string) {
-  const trimmed = value.trim();
-  if (/^\d{2}:\d{2}$/.test(trimmed)) return trimmed;
+  return parseTimeInput(value) ?? "10:00";
+}
+
+function parseTimeInput(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const timeMatch = trimmed.match(/^(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/);
+  if (timeMatch) {
+    const hour = Number(timeMatch[1]);
+    const minute = Number(timeMatch[2]);
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+    }
+    return null;
+  }
   const match = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-  if (!match) return "10:00";
+  if (!match) return null;
   const [, hourText, minuteText, period] = match;
   let hour = Number(hourText);
   if (period.toUpperCase() === "PM" && hour < 12) hour += 12;
   if (period.toUpperCase() === "AM" && hour === 12) hour = 0;
+  if (hour < 0 || hour > 23) return null;
   return `${String(hour).padStart(2, "0")}:${minuteText}`;
 }
 
