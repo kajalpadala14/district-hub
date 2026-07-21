@@ -172,17 +172,6 @@ async function handlePlannerIcsExport(request: Request, url: URL) {
     const plannerTasks = await fetchPlannerTasksForCalendar(settings.user_id);
     const feedMeta = plannerIcsFeedMeta(plannerTasks);
 
-    if (!plannerTasks.length) {
-      const diagnostic = await explainEmptyPlannerCalendar(settings.user_id);
-      return new Response(diagnostic, {
-        status: 404,
-        headers: plannerNoCacheHeaders({
-          "content-type": "text/plain; charset=utf-8",
-          etag: feedMeta.etag,
-        }),
-      });
-    }
-
     if (isPlannerIcsNotModified(request, feedMeta)) {
       return new Response(null, {
         status: 304,

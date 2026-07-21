@@ -15,6 +15,7 @@
     "api:calendar-jobs": "node server/scripts/processCalendarJobs.js",
     "backend:check-env": "node scripts/check-env.mjs",
     "backend:verify-tasks": "node scripts/verify-task-backend.mjs",
+    "test:planner-ics": "node --test scripts/test-planner-ics.mjs",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
