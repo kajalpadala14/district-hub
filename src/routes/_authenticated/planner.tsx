@@ -236,19 +236,20 @@ function PlannerPage() {
       return;
     }
 
-    const token = createPlannerToken();
-    const next = { ...plannerSettings, token };
+    const confirmed = window.confirm(
+      "Rotate the Planner subscription token? Existing Google and Apple Calendar subscriptions using the current URL will stop working and must be subscribed again.",
+    );
+    if (!confirmed) return;
+
     setSettingsSaving(true);
     try {
-      const { data, error } = await supabase
-        .from("planner_settings")
-        .upsert(plannerSettingsToRow(user.id, next), { onConflict: "user_id" })
-        .select("*")
+      const { data, error } = await (supabase as unknown as PlannerSupabaseClient)
+        .rpc("rotate_planner_subscription_token", { p_user_id: user.id })
         .single();
 
       if (error) throw error;
       setPlannerSettings(plannerSettingsFromRow(data));
-      toast.success("Planner token rotated in Supabase");
+      toast.success("Planner token rotated. Subscribe calendars with the new URL.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Planner token update failed");
     } finally {
@@ -670,6 +671,9 @@ function PlannerSettingsPanel({
               Rotate Token
             </Button>
           </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Rotate only for security. It invalidates existing subscribed calendar URLs.
+          </p>
         </div>
 
         <div className="min-w-0 rounded-lg border border-primary/25 bg-primary/5 p-4">
@@ -1035,6 +1039,15 @@ type PlannerSettingsRow = {
   ics_token?: string | null;
 };
 
+type PlannerSupabaseClient = {
+  rpc: (
+    name: "rotate_planner_subscription_token",
+    args: { p_user_id: string },
+  ) => {
+    single: () => Promise<{ data: PlannerSettingsRow; error: Error | null }>;
+  };
+};
+
 function plannerSettingsFromRow(row: PlannerSettingsRow): PlannerSettings {
   return {
     dayStart: timeInputValue(row.day_start),
@@ -1060,6 +1073,7 @@ function plannerSettingsToRow(userId: string, settings: PlannerSettings) {
     lunch_end: settings.lunchEnd || defaultPlannerSettings.lunchEnd,
     apple_ics_url: settings.appleIcsUrl,
     subscription_token: token,
+    ics_token: token,
   };
 }
 

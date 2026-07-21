@@ -49,7 +49,7 @@ export default {
     try {
       const url = new URL(request.url);
       if (url.pathname === "/api/planner/export.ics") {
-        return await handlePlannerIcsExport(url);
+        return await handlePlannerIcsExport(request, url);
       }
       if (url.pathname === "/api/planner/imported-events") {
         return await handlePlannerImportedEvents(url);
@@ -151,7 +151,7 @@ async function handleTaskSave(request: Request) {
   }
 }
 
-async function handlePlannerIcsExport(url: URL) {
+async function handlePlannerIcsExport(request: Request, url: URL) {
   try {
     const token = url.searchParams.get("token")?.trim();
     if (!token) {
@@ -161,40 +161,32 @@ async function handlePlannerIcsExport(url: URL) {
       });
     }
 
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    let { data: settings, error: settingsError } = await supabaseAdmin
-      .from("planner_settings")
-      .select("user_id")
-      .eq("subscription_token", token)
-      .maybeSingle();
-
-    if (!settings && !settingsError) {
-      const fallback = await supabaseAdmin
-        .from("planner_settings")
-        .select("user_id")
-        .eq("ics_token", token)
-        .maybeSingle();
-      settings = fallback.data;
-      settingsError = isPlannerSettingsTokenAliasUnavailable(fallback.error)
-        ? null
-        : fallback.error;
-    }
-
-    if (settingsError) throw settingsError;
+    const settings = await resolvePlannerSettingsByToken(token, "user_id");
     if (!settings) {
       return new Response("Planner subscription token not found", {
         status: 401,
-        headers: { "content-type": "text/plain; charset=utf-8" },
+        headers: plannerNoCacheHeaders({ "content-type": "text/plain; charset=utf-8" }),
       });
     }
 
     const plannerTasks = await fetchPlannerTasksForCalendar(settings.user_id);
+    const feedMeta = plannerIcsFeedMeta(plannerTasks);
 
     if (!plannerTasks.length) {
       const diagnostic = await explainEmptyPlannerCalendar(settings.user_id);
       return new Response(diagnostic, {
         status: 404,
-        headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+        headers: plannerNoCacheHeaders({
+          "content-type": "text/plain; charset=utf-8",
+          etag: feedMeta.etag,
+        }),
+      });
+    }
+
+    if (isPlannerIcsNotModified(request, feedMeta)) {
+      return new Response(null, {
+        status: 304,
+        headers: plannerIcsHeaders(feedMeta),
       });
     }
 
@@ -202,11 +194,7 @@ async function handlePlannerIcsExport(url: URL) {
 
     return new Response(ics, {
       status: 200,
-      headers: {
-        "content-type": "text/calendar; charset=utf-8",
-        "content-disposition": 'attachment; filename="planner.ics"',
-        "cache-control": "no-store",
-      },
+      headers: plannerIcsHeaders(feedMeta),
     });
   } catch (error) {
     console.error("[Planner ICS Export] failed", error);
@@ -280,7 +268,7 @@ async function handlePlannerTaskSave(request: Request) {
         .from("planner_events")
         .update(payload)
         .eq("id", body.id)
-        .select(plannerTaskSelect)
+        .select(plannerTaskSelectWithoutSequence)
         .single();
       if (error) {
         throw error;
@@ -296,7 +284,7 @@ async function handlePlannerTaskSave(request: Request) {
     const { data, error } = await supabaseAdmin
       .from("planner_events")
       .insert({ ...payload, user_id: user.id })
-      .select(plannerTaskSelect)
+      .select(plannerTaskSelectWithoutSequence)
       .single();
     if (error) {
       throw error;
@@ -326,24 +314,19 @@ async function handlePlannerImportedEvents(url: URL) {
       });
     }
 
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: settings, error: settingsError } = await supabaseAdmin
-      .from("planner_settings")
-      .select("apple_ics_url")
-      .eq("subscription_token", token)
-      .maybeSingle();
-
-    if (settingsError) throw settingsError;
+    const settings = await resolvePlannerSettingsByToken(token, "apple_ics_url,apple_calendar_url");
     if (!settings) {
       return new Response("Planner subscription token not found", {
         status: 404,
-        headers: { "content-type": "text/plain; charset=utf-8" },
+        headers: plannerNoCacheHeaders({ "content-type": "text/plain; charset=utf-8" }),
       });
     }
 
     const requestedIcsUrl = url.searchParams.get("icsUrl")?.trim();
-    const events = await fetchImportedPlannerEvents(requestedIcsUrl || settings.apple_ics_url);
-    return Response.json({ events }, { headers: { "cache-control": "no-store" } });
+    const events = await fetchImportedPlannerEvents(
+      requestedIcsUrl || settings.apple_calendar_url || settings.apple_ics_url,
+    );
+    return Response.json({ events }, { headers: plannerNoCacheHeaders() });
   } catch (error) {
     console.error("[Planner Imported Events] failed", error);
     return new Response("Planner imported events fetch failed", {
@@ -367,7 +350,8 @@ type PlannerIcsTask = {
   updated_at: string | null;
   created_at: string | null;
   status: string | null;
-  [key: string]: string | boolean | null | undefined;
+  sequence?: number | null;
+  [key: string]: string | boolean | number | null | undefined;
 };
 
 type PlannerTaskSaveRequest = {
@@ -401,6 +385,17 @@ class PlannerAuthError extends Error {
   }
 }
 
+type PlannerSettingsLookup = {
+  user_id: string;
+  apple_ics_url?: string | null;
+  apple_calendar_url?: string | null;
+};
+
+type PlannerFeedMeta = {
+  etag: string;
+  lastModified: string | null;
+};
+
 type ImportedIcsEvent = {
   uid: string | null;
   summary: string | null;
@@ -420,6 +415,8 @@ const plannerDateFields = [
   "event_date",
 ] as const;
 const plannerTaskSelect =
+  "id,title,description,location,date,start_time,end_time,is_all_day,updated_at,created_at,status,priority,color,user_id,sequence";
+const plannerTaskSelectWithoutSequence =
   "id,title,description,location,date,start_time,end_time,is_all_day,updated_at,created_at,status,priority,color,user_id";
 const legacyPlannerTaskSelect =
   "id,title,description,department,scheduled_date,due_date,due_time,updated_at,created_at,status,priority,calendar_sync_enabled,calendar_sync_status,google_calendar_event_id,calendar_event_html_link,calendar_last_synced_at,calendar_sync_error,calendar_retry_count,assignee_id,completed_at,created_by";
@@ -438,6 +435,72 @@ async function authenticatedPlannerUser(request: Request): Promise<Authenticated
   return {
     id: data.user.id,
     canManageAllTasks: await userCanViewAllTasks(data.user.id),
+  };
+}
+
+async function resolvePlannerSettingsByToken(
+  token: string,
+  selectColumns: string,
+): Promise<PlannerSettingsLookup | null> {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const selectedColumns = selectColumns.includes("user_id") ? selectColumns : `user_id,${selectColumns}`;
+  let { data, error } = await supabaseAdmin
+    .from("planner_settings")
+    .select(selectedColumns)
+    .eq("subscription_token", token)
+    .maybeSingle();
+
+  if (!data && !error) {
+    const fallback = await supabaseAdmin
+      .from("planner_settings")
+      .select(selectedColumns)
+      .eq("ics_token", token)
+      .maybeSingle();
+    data = fallback.data;
+    error = isPlannerSettingsTokenAliasUnavailable(fallback.error) ? null : fallback.error;
+  }
+
+  if (error) throw error;
+  return data as PlannerSettingsLookup | null;
+}
+
+function plannerIcsFeedMeta(tasks: PlannerIcsTask[]): PlannerFeedMeta {
+  const newestUpdatedAt = tasks.reduce<string | null>((newest, task) => {
+    const value = task.updated_at || task.created_at;
+    if (!value) return newest;
+    return !newest || Date.parse(value) > Date.parse(newest) ? value : newest;
+  }, null);
+  const updatedSignature = newestUpdatedAt ? new Date(newestUpdatedAt).toISOString() : "none";
+  return {
+    etag: `"planner-events-${tasks.length}-${updatedSignature}"`,
+    lastModified: newestUpdatedAt ? new Date(newestUpdatedAt).toUTCString() : null,
+  };
+}
+
+function isPlannerIcsNotModified(request: Request, meta: PlannerFeedMeta) {
+  const ifNoneMatch = request.headers.get("if-none-match");
+  if (ifNoneMatch?.split(",").map((value) => value.trim()).includes(meta.etag)) return true;
+
+  const ifModifiedSince = request.headers.get("if-modified-since");
+  if (!ifModifiedSince || !meta.lastModified) return false;
+  const since = Date.parse(ifModifiedSince);
+  const lastModified = Date.parse(meta.lastModified);
+  return Number.isFinite(since) && Number.isFinite(lastModified) && lastModified <= since;
+}
+
+function plannerIcsHeaders(meta: PlannerFeedMeta) {
+  return plannerNoCacheHeaders({
+    "content-type": "text/calendar; charset=utf-8",
+    "content-disposition": 'attachment; filename="planner.ics"',
+    etag: meta.etag,
+    ...(meta.lastModified ? { "last-modified": meta.lastModified } : {}),
+  });
+}
+
+function plannerNoCacheHeaders(headers: HeadersInit = {}) {
+  return {
+    ...headers,
+    "cache-control": "private, no-cache, max-age=0, must-revalidate",
   };
 }
 
@@ -551,10 +614,27 @@ async function fetchPlannerTaskRows(
   userId: string,
   canViewAllPlannerTasks: boolean,
 ): Promise<PlannerIcsTask[]> {
+  try {
+    return await fetchPlannerTaskRowsWithSelect(userId, canViewAllPlannerTasks, plannerTaskSelect);
+  } catch (error) {
+    if (!isPlannerEventsSequenceUnavailable(error)) throw error;
+    return await fetchPlannerTaskRowsWithSelect(
+      userId,
+      canViewAllPlannerTasks,
+      plannerTaskSelectWithoutSequence,
+    );
+  }
+}
+
+async function fetchPlannerTaskRowsWithSelect(
+  userId: string,
+  canViewAllPlannerTasks: boolean,
+  selectColumns: string,
+): Promise<PlannerIcsTask[]> {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   let query = supabaseAdmin
     .from("planner_events")
-    .select(plannerTaskSelect)
+    .select(selectColumns)
     .order("date", { ascending: true, nullsFirst: false })
     .order("start_time", { ascending: true, nullsFirst: false });
 
@@ -573,7 +653,12 @@ function isPlannerSettingsTokenAliasUnavailable(error: { code?: string; message?
   return /ics_token/i.test(message) || /schema cache/i.test(message);
 }
 
-function plannerEventRowToIcsTask(row: Record<string, string | boolean | null>): PlannerIcsTask {
+function isPlannerEventsSequenceUnavailable(error: unknown) {
+  const message = error instanceof Error ? error.message : String((error as { message?: unknown })?.message ?? "");
+  return /sequence/i.test(message) && /planner_events|schema cache|column/i.test(message);
+}
+
+function plannerEventRowToIcsTask(row: Record<string, string | boolean | number | null>): PlannerIcsTask {
   const date = typeof row.date === "string" ? row.date : null;
   const startTime = typeof row.start_time === "string" ? row.start_time : null;
   const endTime = typeof row.end_time === "string" ? row.end_time : null;
@@ -593,6 +678,7 @@ function plannerEventRowToIcsTask(row: Record<string, string | boolean | null>):
     updated_at: typeof row.updated_at === "string" ? row.updated_at : null,
     created_at: typeof row.created_at === "string" ? row.created_at : null,
     status,
+    sequence: typeof row.sequence === "number" ? row.sequence : null,
   };
 }
 
@@ -846,6 +932,7 @@ function buildPlannerIcsEvent(task: PlannerIcsTask) {
   const lines = [
     "BEGIN:VEVENT",
     `UID:${escapeIcs(task.id)}@review-dashboard-planner`,
+    `SEQUENCE:${Math.max(0, Number(task.sequence) || 0)}`,
     `DTSTAMP:${toIcsDateTime(new Date(updated))}`,
     `LAST-MODIFIED:${toIcsDateTime(new Date(updated))}`,
     `SUMMARY:${escapeIcs(task.title || "Planner Meeting")}`,
