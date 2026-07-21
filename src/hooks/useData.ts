@@ -83,19 +83,7 @@ export function usePlannerEvents() {
         .select("*")
         .order("date", { ascending: true })
         .order("start_time", { ascending: true, nullsFirst: false });
-      if (queryError) {
-        if (isPlannerEventsTableUnavailable(queryError)) {
-          const { data: legacyData, error: legacyError } = await supabase
-            .from("tasks")
-            .select("*")
-            .or("scheduled_date.not.is.null,due_date.not.is.null")
-            .order("created_at", { ascending: false });
-          if (legacyError) throw legacyError;
-          setTasks(legacyData ?? []);
-          return;
-        }
-        throw queryError;
-      }
+      if (queryError) throw queryError;
       const plannerEvents = data ?? [];
       const syncRowsBySourceId = await loadPlannerGoogleSyncRows(
         plannerEvents.map((event) => event.id),
@@ -144,11 +132,6 @@ export function usePlannerEvents() {
   }, [load]);
 
   return { tasks, loading, error, refresh: load };
-}
-
-function isPlannerEventsTableUnavailable(error: { code?: string; message?: string }) {
-  const message = error.message ?? "";
-  return error.code === "42P01" || /planner_events/i.test(message) || /schema cache/i.test(message);
 }
 
 async function loadPlannerGoogleSyncRows(sourceIds: string[]) {

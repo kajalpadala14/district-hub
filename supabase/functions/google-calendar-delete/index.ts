@@ -3,8 +3,9 @@ import {
   assertTaskAccess,
   deleteCalendarEvent,
   getAuthenticatedUser,
+  loadCalendarSource,
   loadConnection,
-  loadTask,
+  logAudit,
   refreshAccessToken,
   serviceClient,
 } from "../_shared/google-calendar.ts";
@@ -17,8 +18,57 @@ Deno.serve(async (req) => {
     const { taskId } = await req.json();
     if (!taskId) return jsonResponse({ error: "taskId is required" }, 400);
 
-    const task = await loadTask(taskId);
+    console.info("[Planner Google Calendar Delete] Edge Function received", {
+      taskId,
+      actorId: user.id,
+    });
+
+    const task = await loadCalendarSource(taskId);
     await assertTaskAccess(user.id, task);
+
+    console.info("[Planner Google Calendar Delete] calendar source loaded", {
+      sourceType: task.source_type ?? "task",
+      sourceId: task.id,
+      ownerUserId: task.created_by,
+    });
+
+    if (task.source_type === "planner_event") {
+      const { data: events, error } = await serviceClient
+        .from("calendar_events")
+        .select("user_id, external_event_id, sync_status")
+        .eq("source_type", "planner_event")
+        .eq("source_id", task.id)
+        .eq("provider", "google");
+      if (error) throw error;
+
+      for (const event of events ?? []) {
+        if (!event.external_event_id) continue;
+        const connection = await loadConnection(event.user_id);
+        if (!connection) {
+          throw new Error(
+            "Google Calendar is no longer connected. Reconnect Google Calendar before deleting this synced meeting.",
+          );
+        }
+        const accessToken = await refreshAccessToken(connection);
+        await deleteCalendarEvent(event.external_event_id, accessToken);
+      }
+
+      const deleteResult = await serviceClient
+        .from("calendar_events")
+        .delete()
+        .eq("source_type", "planner_event")
+        .eq("source_id", task.id)
+        .eq("provider", "google");
+      if (deleteResult.error) throw deleteResult.error;
+
+      await logAudit(task.id, user.id, "task_deleted", {
+        source_type: "planner_event",
+        provider: "google",
+        deleted_google_events: (events ?? []).filter((event) => event.external_event_id).length,
+      });
+
+      return jsonResponse({ ok: true });
+    }
 
     const { data: events, error } = await serviceClient
       .from("task_calendar_events")
@@ -28,12 +78,21 @@ Deno.serve(async (req) => {
 
     for (const event of events ?? []) {
       const connection = await loadConnection(event.user_id);
-      if (!connection) continue;
+      if (!connection) {
+        throw new Error(
+          "Google Calendar is no longer connected. Reconnect Google Calendar before deleting this synced task.",
+        );
+      }
       const accessToken = await refreshAccessToken(connection);
       await deleteCalendarEvent(event.google_calendar_event_id, accessToken);
     }
 
-    if (task.google_calendar_event_id && !(events ?? []).some((event) => event.google_calendar_event_id === task.google_calendar_event_id)) {
+    if (
+      task.google_calendar_event_id &&
+      !(events ?? []).some(
+        (event) => event.google_calendar_event_id === task.google_calendar_event_id,
+      )
+    ) {
       const connection = await loadConnection(task.created_by);
       if (connection) {
         const accessToken = await refreshAccessToken(connection);
@@ -54,6 +113,11 @@ Deno.serve(async (req) => {
         calendar_sync_enabled: false,
       })
       .eq("id", task.id);
+    await logAudit(task.id, user.id, "task_deleted", {
+      source_type: "task",
+      provider: "google",
+      deleted_google_events: (events ?? []).length,
+    });
 
     return jsonResponse({ ok: true });
   } catch (error) {

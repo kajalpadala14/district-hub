@@ -57,10 +57,15 @@ export async function syncTaskCalendar(taskId: string, retry = false) {
 }
 
 export async function deleteTaskCalendarEvent(taskId: string) {
-  const { error } = await supabase.functions.invoke("google-calendar-delete", {
-    body: { taskId },
-  });
+  const { data, error } = await supabase.functions.invoke<{ ok?: boolean; error?: string }>(
+    "google-calendar-delete",
+    {
+      body: { taskId },
+    },
+  );
   if (error) throw new Error(error.message);
+  if (data?.error) throw new Error(data.error);
+  return data;
 }
 
 export function googleCalendarUrl(task: Task) {

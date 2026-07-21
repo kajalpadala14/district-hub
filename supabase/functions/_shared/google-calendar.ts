@@ -201,13 +201,24 @@ export async function upsertCalendarEvent(task: TaskRow, ownerUserId: string, ac
 }
 
 export async function deleteCalendarEvent(eventId: string, accessToken: string) {
+  const calendarId = googleCalendarId();
+  console.info("[Planner Google Calendar Delete] Google API request", {
+    calendarId,
+    eventId,
+  });
   const response = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
     {
       method: "DELETE",
       headers: { Authorization: `Bearer ${accessToken}` },
     },
   );
+  console.info("[Planner Google Calendar Delete] Google API response", {
+    calendarId,
+    eventId,
+    status: response.status,
+    ok: response.ok || response.status === 404 || response.status === 410,
+  });
   if (!response.ok && response.status !== 404 && response.status !== 410) {
     const payload = await response.json().catch(() => ({}));
     throw new HttpError(

@@ -39,7 +39,11 @@ import { useAuth } from "@/hooks/useAuth";
 import { useDepartments, usePlannerEvents, useProfiles, type Task } from "@/hooks/useData";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
-import { requestGoogleCalendarConnection, syncTaskCalendar } from "@/lib/googleCalendar";
+import {
+  deleteTaskCalendarEvent,
+  requestGoogleCalendarConnection,
+  syncTaskCalendar,
+} from "@/lib/googleCalendar";
 import {
   dateKeyForTask,
   isPlannerMeetingTask,
@@ -327,6 +331,19 @@ function PlannerPage() {
       if (sessionError) throw sessionError;
       const accessToken = sessionData.session?.access_token;
       if (!accessToken) throw new Error("Please sign in before deleting planner meetings.");
+
+      if (
+        task.calendar_sync_enabled ||
+        task.calendar_sync_status === "synced" ||
+        task.google_calendar_event_id
+      ) {
+        console.info("[Planner Google Calendar Delete] requesting remote delete", {
+          plannerEventId: task.id,
+          status: task.calendar_sync_status,
+          googleEventId: task.google_calendar_event_id,
+        });
+        await deleteTaskCalendarEvent(task.id);
+      }
 
       const response = await fetch("/api/planner/tasks", {
         method: "DELETE",
@@ -765,7 +782,7 @@ function EventDialog({
 }) {
   const isEditMode = mode === "edit" && !!event && !event.id.startsWith("ics-");
   const [saving, setSaving] = useState(false);
-  const [, setGoogleCalendarConnected] = useState(false);
+  const [googleCalendarConnected, setGoogleCalendarConnected] = useState(false);
   const [form, setForm] = useState({
     title: "",
     date: "",
@@ -797,7 +814,7 @@ function EventDialog({
   }, [event, defaultDate, defaultTime, open, isEditMode]);
 
   useEffect(() => {
-    if (!open || isEditMode) return;
+    if (!open) return;
     let cancelled = false;
 
     const loadGoogleCalendarStatus = async () => {
@@ -810,10 +827,13 @@ function EventDialog({
       const connected = await isGoogleCalendarConnected(sessionData.session.user.id);
       if (cancelled) return;
       setGoogleCalendarConnected(connected);
-      setForm((current) => ({
-        ...current,
-        calendar_sync_enabled: connected,
-      }));
+      setForm((current) => {
+        const defaultSyncEnabled = connected || current.calendar_sync_enabled;
+        return {
+          ...current,
+          calendar_sync_enabled: defaultSyncEnabled,
+        };
+      });
       console.info("[Planner Google Calendar Sync] connection status loaded", {
         userId: sessionData.session.user.id,
         connected,
@@ -825,7 +845,7 @@ function EventDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, isEditMode]);
+  }, [open]);
 
   const submit = async (submitEvent: React.FormEvent<HTMLFormElement>) => {
     submitEvent.preventDefault();
@@ -849,6 +869,7 @@ function EventDialog({
       .filter(Boolean)
       .join("\n");
 
+    const shouldSyncGoogle = googleCalendarConnected || form.calendar_sync_enabled;
     const payload = {
       title,
       description: description || null,
@@ -863,7 +884,7 @@ function EventDialog({
             ? ("in_progress" as const)
             : ("todo" as const),
       priority: "medium" as const,
-      calendar_sync_enabled: form.calendar_sync_enabled,
+      calendar_sync_enabled: shouldSyncGoogle,
     };
 
     console.info("[Planner Booking Debug] selected slot", {
@@ -889,7 +910,7 @@ function EventDialog({
       await onSaved();
       toast.success(isEditMode ? "Event updated" : "Event created");
 
-      if (form.calendar_sync_enabled) {
+      if (shouldSyncGoogle) {
         try {
           const connected = await isGoogleCalendarConnected(sessionData.session.user.id);
           if (!connected) {
@@ -1387,7 +1408,10 @@ async function savePlannerTask(
     if (!response.ok) {
       const message = await response.text();
       if (![404, 405].includes(response.status)) throw new Error(message);
-      console.warn("[Planner Event Save] server API unavailable, using Supabase fallback", message);
+      console.warn(
+        "[Planner Event Save] server API unavailable, using Supabase direct save",
+        message,
+      );
     } else {
       const result = (await response.json()) as { task?: Pick<Task, "id"> };
       if (!result.task?.id) throw new Error("Event save did not return an id.");
@@ -1400,7 +1424,10 @@ async function savePlannerTask(
     ) {
       throw error;
     }
-    console.warn("[Planner Event Save] server API request failed, using Supabase fallback", error);
+    console.warn(
+      "[Planner Event Save] server API request failed, using Supabase direct save",
+      error,
+    );
   }
 
   const result = id
@@ -1441,20 +1468,7 @@ async function savePlannerEventFallback(
         .select("id")
         .single();
 
-  if (!result.error || !isPlannerEventsTableUnavailable(result.error)) return result;
-
-  return id
-    ? supabase.from("tasks").update(payload).eq("id", id).select("id").single()
-    : supabase
-        .from("tasks")
-        .insert({ ...payload, created_by: currentUserId })
-        .select("id")
-        .single();
-}
-
-function isPlannerEventsTableUnavailable(error: { code?: string; message?: string }) {
-  const message = error.message ?? "";
-  return error.code === "42P01" || /planner_events/i.test(message) || /schema cache/i.test(message);
+  return result;
 }
 
 function plannerEventPayload(payload: {

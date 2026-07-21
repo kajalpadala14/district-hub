@@ -253,14 +253,7 @@ async function handlePlannerTaskSave(request: Request) {
       }
 
       const { error } = await supabaseAdmin.from("planner_events").delete().eq("id", body.id);
-      if (error) {
-        if (isPlannerEventsTableUnavailable(error)) {
-          const legacy = await supabaseAdmin.from("tasks").delete().eq("id", body.id);
-          if (legacy.error) throw legacy.error;
-          return Response.json({ ok: true }, { status: 200 });
-        }
-        throw error;
-      }
+      if (error) throw error;
       return Response.json({ ok: true }, { status: 200 });
     }
 
@@ -290,9 +283,6 @@ async function handlePlannerTaskSave(request: Request) {
         .select(plannerTaskSelect)
         .single();
       if (error) {
-        if (isPlannerEventsTableUnavailable(error)) {
-          return saveLegacyPlannerTask(body, user.id, true);
-        }
         throw error;
       }
       console.info("[Planner Booking Debug] database saved", {
@@ -309,9 +299,6 @@ async function handlePlannerTaskSave(request: Request) {
       .select(plannerTaskSelect)
       .single();
     if (error) {
-      if (isPlannerEventsTableUnavailable(error)) {
-        return saveLegacyPlannerTask(body, user.id, false);
-      }
       throw error;
     }
     console.info("[Planner Booking Debug] database saved", {
@@ -327,34 +314,6 @@ async function handlePlannerTaskSave(request: Request) {
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   }
-}
-
-async function saveLegacyPlannerTask(
-  body: PlannerTaskSaveRequest,
-  userId: string,
-  shouldUpdate: boolean,
-) {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const payload = legacyPlannerTaskPayload(body);
-
-  if (shouldUpdate && body.id) {
-    const { data, error } = await supabaseAdmin
-      .from("tasks")
-      .update(payload)
-      .eq("id", body.id)
-      .select(legacyPlannerTaskSelect)
-      .single();
-    if (error) throw error;
-    return Response.json({ task: data }, { status: 200 });
-  }
-
-  const { data, error } = await supabaseAdmin
-    .from("tasks")
-    .insert({ ...payload, created_by: userId })
-    .select(legacyPlannerTaskSelect)
-    .single();
-  if (error) throw error;
-  return Response.json({ task: data }, { status: 201 });
 }
 
 async function handlePlannerImportedEvents(url: URL) {
@@ -505,27 +464,6 @@ function plannerTaskPayload(body: PlannerTaskSaveRequest) {
   };
 }
 
-function legacyPlannerTaskPayload(body: PlannerTaskSaveRequest) {
-  const title = body.title?.trim();
-  if (!title) throw new PlannerAuthError("Event title required", 400);
-
-  const scheduledDate = normalizeDateKey(body.scheduled_date) ?? normalizeDateKey(body.due_date);
-  if (!scheduledDate) throw new PlannerAuthError("Planner event date required", 400);
-
-  return {
-    title,
-    description: body.description?.trim() || null,
-    department:
-      extractDescriptionField(body.description, "Venue") ?? body.department?.trim() ?? null,
-    scheduled_date: scheduledDate,
-    due_date: scheduledDate,
-    due_time: normalizeTime(body.due_time) || null,
-    status: normalizeTaskStatus(body.status),
-    priority: normalizeTaskPriority(body.priority),
-    calendar_sync_enabled: body.calendar_sync_enabled === true,
-  };
-}
-
 function taskPayload(body: TaskSaveRequest) {
   const title = body.title?.trim();
   if (!title) throw new PlannerAuthError("Task description required", 400);
@@ -560,37 +498,11 @@ async function getPlannerTaskForUser(taskId: string, userId: string) {
   }
 
   const { data, error } = await query;
-  if (error) {
-    if (isPlannerEventsTableUnavailable(error)) {
-      return getLegacyPlannerTaskForUser(taskId, userId, canManageAllTasks);
-    }
-    throw error;
-  }
-  return data;
-}
-
-async function getTaskForUser(taskId: string, userId: string, canManageAllTasks: boolean) {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  let query = supabaseAdmin
-    .from("tasks")
-    .select("id,created_by,assignee_id")
-    .eq("id", taskId)
-    .maybeSingle();
-
-  if (!canManageAllTasks) {
-    query = query.or(`created_by.eq.${userId},assignee_id.eq.${userId}`);
-  }
-
-  const { data, error } = await query;
   if (error) throw error;
   return data;
 }
 
-async function getLegacyPlannerTaskForUser(
-  taskId: string,
-  userId: string,
-  canManageAllTasks: boolean,
-) {
+async function getTaskForUser(taskId: string, userId: string, canManageAllTasks: boolean) {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   let query = supabaseAdmin
     .from("tasks")
@@ -651,43 +563,8 @@ async function fetchPlannerTaskRows(
   }
 
   const { data, error } = await query;
-  if (error) {
-    if (isPlannerEventsTableUnavailable(error)) {
-      return fetchLegacyPlannerTaskRows(userId, canViewAllPlannerTasks);
-    }
-    throw error;
-  }
-  return (data ?? []).map(plannerEventRowToIcsTask);
-}
-
-async function fetchLegacyPlannerTaskRows(
-  userId: string,
-  canViewAllPlannerTasks: boolean,
-): Promise<PlannerIcsTask[]> {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  let query = supabaseAdmin
-    .from("tasks")
-    .select(legacyPlannerTaskSelect)
-    .order("scheduled_date", { ascending: true, nullsFirst: false })
-    .order("due_date", { ascending: true, nullsFirst: false });
-
-  if (!canViewAllPlannerTasks) {
-    query = query.or(
-      `created_by.eq.${userId},assigned_to.eq.${userId},assignee_id.eq.${userId},backend_assigned_to.eq.${userId}`,
-    );
-  }
-
-  const { data, error } = await query;
   if (error) throw error;
-  return (data ?? []).map((row) => ({
-    ...row,
-    location: row.department,
-  }));
-}
-
-function isPlannerEventsTableUnavailable(error: { code?: string; message?: string }) {
-  const message = error.message ?? "";
-  return error.code === "42P01" || /planner_events/i.test(message) || /schema cache/i.test(message);
+  return (data ?? []).map(plannerEventRowToIcsTask);
 }
 
 function isPlannerSettingsTokenAliasUnavailable(error: { code?: string; message?: string } | null) {
