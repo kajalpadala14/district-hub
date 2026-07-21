@@ -243,15 +243,23 @@ function PlannerPage() {
 
     setSettingsSaving(true);
     try {
-      const { data, error } = await (supabase as unknown as PlannerSupabaseClient)
+      const rpcResult = await (supabase as unknown as PlannerSupabaseClient)
         .rpc("rotate_planner_subscription_token", { p_user_id: user.id })
         .single();
 
-      if (error) throw error;
-      setPlannerSettings(plannerSettingsFromRow(data));
+      if (rpcResult.error) throw rpcResult.error;
+      setPlannerSettings(plannerSettingsFromRow(rpcResult.data));
       toast.success("Planner token rotated. Subscribe calendars with the new URL.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Planner token update failed");
+      try {
+        const fallbackSettings = await rotatePlannerTokenFallback(user.id, plannerSettings);
+        setPlannerSettings(fallbackSettings);
+        toast.success("Planner token rotated. Subscribe calendars with the new URL.");
+      } catch (fallbackError) {
+        toast.error(
+          fallbackError instanceof Error ? fallbackError.message : "Planner token update failed",
+        );
+      }
     } finally {
       setSettingsSaving(false);
     }
@@ -1075,6 +1083,40 @@ function plannerSettingsToRow(userId: string, settings: PlannerSettings) {
     subscription_token: token,
     ics_token: token,
   };
+}
+
+function plannerSettingsToLegacyTokenRow(userId: string, settings: PlannerSettings) {
+  const row = plannerSettingsToRow(userId, settings);
+  const { ics_token, ...legacyRow } = row;
+  void ics_token;
+  return legacyRow;
+}
+
+async function rotatePlannerTokenFallback(userId: string, settings: PlannerSettings) {
+  const token = createPlannerToken();
+  const next = { ...settings, token };
+  const modernResult = await supabase
+    .from("planner_settings")
+    .upsert(plannerSettingsToRow(userId, next), { onConflict: "user_id" })
+    .select("*")
+    .single();
+
+  if (!modernResult.error) return plannerSettingsFromRow(modernResult.data);
+  if (!isPlannerSettingsAliasUnavailable(modernResult.error)) throw modernResult.error;
+
+  const legacyResult = await supabase
+    .from("planner_settings")
+    .upsert(plannerSettingsToLegacyTokenRow(userId, next), { onConflict: "user_id" })
+    .select("*")
+    .single();
+
+  if (legacyResult.error) throw legacyResult.error;
+  return plannerSettingsFromRow(legacyResult.data);
+}
+
+function isPlannerSettingsAliasUnavailable(error: { message?: string; code?: string } | null) {
+  const message = error?.message ?? "";
+  return /ics_token/i.test(message) || /schema cache/i.test(message);
 }
 
 function timeInputValue(value: string) {
