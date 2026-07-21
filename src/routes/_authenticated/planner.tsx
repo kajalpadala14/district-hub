@@ -34,16 +34,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Checkbox } from "@/components/ui/checkbox";
 import { useAuth } from "@/hooks/useAuth";
 import { useDepartments, usePlannerEvents, useProfiles, type Task } from "@/hooks/useData";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
-import {
-  deleteTaskCalendarEvent,
-  requestGoogleCalendarConnection,
-  syncTaskCalendar,
-} from "@/lib/googleCalendar";
 import {
   dateKeyForTask,
   isPlannerMeetingTask,
@@ -88,8 +82,6 @@ const eventColors = [
   "bg-cyan-500",
   "bg-orange-400",
 ] as const;
-
-const pendingPlannerGoogleSyncKey = "district-hub:pending-planner-google-sync";
 
 function PlannerPage() {
   const { user } = useAuth();
@@ -172,25 +164,6 @@ function PlannerPage() {
       cancelled = true;
     };
   }, [user?.id]);
-
-  useEffect(() => {
-    if (!user?.id || typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("googleCalendar") !== "connected") return;
-
-    const pendingTaskId = window.localStorage.getItem(pendingPlannerGoogleSyncKey);
-    if (!pendingTaskId) return;
-
-    window.localStorage.removeItem(pendingPlannerGoogleSyncKey);
-    void syncTaskCalendar(pendingTaskId)
-      .then(async () => {
-        await refreshTasks();
-        toast.success("Google Calendar connected and event synced");
-      })
-      .catch((error) => {
-        toast.error(error instanceof Error ? error.message : "Google Calendar sync failed");
-      });
-  }, [user?.id, refreshTasks]);
 
   const tasksByDay = useMemo(() => {
     const map = new Map<string, Task[]>();
@@ -331,19 +304,6 @@ function PlannerPage() {
       if (sessionError) throw sessionError;
       const accessToken = sessionData.session?.access_token;
       if (!accessToken) throw new Error("Please sign in before deleting planner meetings.");
-
-      if (
-        task.calendar_sync_enabled ||
-        task.calendar_sync_status === "synced" ||
-        task.google_calendar_event_id
-      ) {
-        console.info("[Planner Google Calendar Delete] requesting remote delete", {
-          plannerEventId: task.id,
-          status: task.calendar_sync_status,
-          googleEventId: task.google_calendar_event_id,
-        });
-        await deleteTaskCalendarEvent(task.id);
-      }
 
       const response = await fetch("/api/planner/tasks", {
         method: "DELETE",
@@ -782,7 +742,6 @@ function EventDialog({
 }) {
   const isEditMode = mode === "edit" && !!event && !event.id.startsWith("ics-");
   const [saving, setSaving] = useState(false);
-  const [googleCalendarConnected, setGoogleCalendarConnected] = useState(false);
   const [form, setForm] = useState({
     title: "",
     date: "",
@@ -794,7 +753,6 @@ function EventDialog({
     venue: "",
     attendees: "",
     notes: "",
-    calendar_sync_enabled: false,
   });
 
   useEffect(() => {
@@ -809,43 +767,8 @@ function EventDialog({
       venue: "",
       attendees: "",
       notes: event?.description ?? "",
-      calendar_sync_enabled: isEditMode ? (event?.calendar_sync_enabled ?? false) : false,
     });
   }, [event, defaultDate, defaultTime, open, isEditMode]);
-
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-
-    const loadGoogleCalendarStatus = async () => {
-      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError || !sessionData.session?.user.id) {
-        if (!cancelled) setGoogleCalendarConnected(false);
-        return;
-      }
-
-      const connected = await isGoogleCalendarConnected(sessionData.session.user.id);
-      if (cancelled) return;
-      setGoogleCalendarConnected(connected);
-      setForm((current) => {
-        const defaultSyncEnabled = connected || current.calendar_sync_enabled;
-        return {
-          ...current,
-          calendar_sync_enabled: defaultSyncEnabled,
-        };
-      });
-      console.info("[Planner Google Calendar Sync] connection status loaded", {
-        userId: sessionData.session.user.id,
-        connected,
-        defaultSyncEnabled: connected,
-      });
-    };
-
-    void loadGoogleCalendarStatus();
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
 
   const submit = async (submitEvent: React.FormEvent<HTMLFormElement>) => {
     submitEvent.preventDefault();
@@ -869,7 +792,6 @@ function EventDialog({
       .filter(Boolean)
       .join("\n");
 
-    const shouldSyncGoogle = googleCalendarConnected || form.calendar_sync_enabled;
     const payload = {
       title,
       description: description || null,
@@ -884,7 +806,6 @@ function EventDialog({
             ? ("in_progress" as const)
             : ("todo" as const),
       priority: "medium" as const,
-      calendar_sync_enabled: shouldSyncGoogle,
     };
 
     console.info("[Planner Booking Debug] selected slot", {
@@ -900,7 +821,7 @@ function EventDialog({
       if (!sessionData.session?.user.id)
         throw new Error("Please sign in before saving planner events.");
 
-      const savedTask = await savePlannerTask(
+      await savePlannerTask(
         isEditMode ? event.id : null,
         payload,
         sessionData.session.access_token,
@@ -909,34 +830,6 @@ function EventDialog({
 
       await onSaved();
       toast.success(isEditMode ? "Event updated" : "Event created");
-
-      if (shouldSyncGoogle) {
-        try {
-          const connected = await isGoogleCalendarConnected(sessionData.session.user.id);
-          if (!connected) {
-            window.localStorage.setItem(pendingPlannerGoogleSyncKey, savedTask.id);
-            toast.message("Event created. Connect Google Calendar to finish sync.");
-            await requestGoogleCalendarConnection(window.location.href);
-            return;
-          }
-
-          console.info("[Planner Google Calendar Sync] triggering Edge Function", {
-            plannerEventId: savedTask.id,
-            selectedSlot: payload.due_time,
-          });
-          const syncResult = await syncTaskCalendar(savedTask.id);
-          console.info("[Planner Google Calendar Sync] Edge Function completed", syncResult);
-          await onSaved();
-          toast.success("Google Calendar synced");
-        } catch (syncError) {
-          console.error("[Planner Google Calendar Sync] failed", syncError);
-          toast.error(
-            syncError instanceof Error
-              ? `Event saved, but Google Calendar sync failed: ${syncError.message}`
-              : "Event saved, but Google Calendar sync failed",
-          );
-        }
-      }
 
       onOpenChange(false);
     } catch (error) {
@@ -1103,19 +996,6 @@ function EventDialog({
               className="resize-none bg-background"
             />
           </div>
-
-          <label className="flex cursor-pointer items-center gap-3 rounded-lg border bg-background px-3 py-3 text-sm font-medium shadow-sm">
-            <Checkbox
-              checked={form.calendar_sync_enabled}
-              onCheckedChange={(checked) =>
-                setForm({ ...form, calendar_sync_enabled: checked === true })
-              }
-            />
-            <span className="flex items-center gap-2">
-              <CalendarDays className="h-4 w-4 text-primary" />
-              Sync with Google Calendar
-            </span>
-          </label>
 
           <DialogFooter className="grid grid-cols-2 gap-2 sm:space-x-0">
             <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
@@ -1295,7 +1175,7 @@ function plannerSubscriptionWarning(urlText: string) {
       return "Calendar subscription needs a public HTTPS app URL.";
     }
     if (isPrivatePlannerHost(url.hostname)) {
-      return "This is a local/private URL. Set VITE_PLANNER_PUBLIC_BASE_URL to your deployed HTTPS app URL before using Google or Apple subscription.";
+      return "This is a local/private URL. Set VITE_PLANNER_PUBLIC_BASE_URL to your deployed HTTPS app URL before using Apple Calendar or WEBCAL subscription.";
     }
   } catch {
     return "Calendar subscription URL is invalid.";
@@ -1390,7 +1270,6 @@ async function savePlannerTask(
     department: string | null;
     status: Task["status"];
     priority: Task["priority"];
-    calendar_sync_enabled: boolean;
   },
   accessToken: string,
   currentUserId: string,
@@ -1451,7 +1330,6 @@ async function savePlannerEventFallback(
     department: string | null;
     status: Task["status"];
     priority: Task["priority"];
-    calendar_sync_enabled: boolean;
   },
   currentUserId: string,
 ) {
@@ -1508,21 +1386,6 @@ function plannerEventStatus(status: Task["status"], description: string | null) 
   if (status === "done") return "completed";
   if (status === "todo" || formStatus === "tentative") return "tentative";
   return "confirmed";
-}
-
-async function isGoogleCalendarConnected(userId: string) {
-  const { data, error } = await supabase
-    .from("google_calendar_connection_status")
-    .select("user_id, expires_at")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (error) {
-    console.warn("[Planner Google Calendar Status] failed", error);
-    return false;
-  }
-
-  return !!data;
 }
 
 function minutesFromTime(value: string) {

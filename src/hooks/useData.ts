@@ -4,7 +4,6 @@ import type { Database } from "@/integrations/supabase/types";
 
 export type Task = Database["public"]["Tables"]["tasks"]["Row"];
 export type PlannerEvent = Database["public"]["Tables"]["planner_events"]["Row"];
-export type PlannerCalendarEvent = Database["public"]["Tables"]["calendar_events"]["Row"];
 export type Profile = Database["public"]["Tables"]["profiles"]["Row"];
 export type Department = Database["public"]["Tables"]["departments"]["Row"];
 export type TaskStatus = Database["public"]["Enums"]["task_status"];
@@ -85,9 +84,6 @@ export function usePlannerEvents() {
         .order("start_time", { ascending: true, nullsFirst: false });
       if (queryError) throw queryError;
       const plannerEvents = data ?? [];
-      const syncRowsBySourceId = await loadPlannerGoogleSyncRows(
-        plannerEvents.map((event) => event.id),
-      );
 
       console.info(
         "[Planner Position Debug] planner_events response",
@@ -97,12 +93,9 @@ export function usePlannerEvents() {
           start_time: event.start_time,
           end_time: event.end_time,
           date: event.date,
-          google_sync_status: syncRowsBySourceId.get(event.id)?.sync_status ?? "not_synced",
         })),
       );
-      setTasks(
-        plannerEvents.map((event) => plannerEventToTask(event, syncRowsBySourceId.get(event.id))),
-      );
+      setTasks(plannerEvents.map((event) => plannerEventToTask(event)));
     } catch (loadError) {
       const message =
         loadError instanceof Error ? loadError.message : "Failed to load planner events";
@@ -134,25 +127,7 @@ export function usePlannerEvents() {
   return { tasks, loading, error, refresh: load };
 }
 
-async function loadPlannerGoogleSyncRows(sourceIds: string[]) {
-  if (!sourceIds.length) return new Map<string, PlannerCalendarEvent>();
-
-  const { data, error } = await supabase
-    .from("calendar_events")
-    .select("*")
-    .eq("source_type", "planner_event")
-    .eq("provider", "google")
-    .in("source_id", sourceIds);
-
-  if (error) {
-    console.warn("[Planner Google Calendar Sync] status load failed", error);
-    return new Map<string, PlannerCalendarEvent>();
-  }
-
-  return new Map((data ?? []).map((row) => [row.source_id, row]));
-}
-
-function plannerEventToTask(event: PlannerEvent, syncRow?: PlannerCalendarEvent): Task {
+function plannerEventToTask(event: PlannerEvent): Task {
   const status: TaskStatus =
     event.status === "cancelled"
       ? "blocked"
@@ -180,26 +155,20 @@ function plannerEventToTask(event: PlannerEvent, syncRow?: PlannerCalendarEvent)
     updated_at: event.updated_at,
     assignee_id: null,
     completed_at: event.status === "completed" ? event.updated_at : null,
-    calendar_event_html_link: syncRow?.external_event_url ?? null,
-    calendar_last_synced_at: syncRow?.last_synced_at ?? null,
-    calendar_retry_count: syncRow?.retry_count ?? 0,
-    calendar_sync_enabled: !!syncRow && syncRow.sync_status !== "disabled",
-    calendar_sync_error: syncRow?.sync_error ?? null,
-    calendar_sync_status: plannerSyncStatus(syncRow?.sync_status),
-    google_calendar_event_id: syncRow?.external_event_id ?? null,
+    calendar_event_html_link: null,
+    calendar_last_synced_at: null,
+    calendar_retry_count: 0,
+    calendar_sync_enabled: false,
+    calendar_sync_error: null,
+    calendar_sync_status: "not_synced",
+    google_calendar_event_id: null,
   };
   console.info("[Planner Position Debug] mapped planner event", {
     id: event.id,
     start_time: event.start_time,
     due_time: task.due_time,
-    google_sync_status: task.calendar_sync_status,
   });
   return task;
-}
-
-function plannerSyncStatus(value: string | null | undefined): Task["calendar_sync_status"] {
-  if (value === "pending" || value === "synced" || value === "failed") return value;
-  return "not_synced";
 }
 
 export function useProfiles() {
