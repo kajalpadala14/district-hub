@@ -25,7 +25,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useDepartments, useProfiles, useTasks, type Task } from "@/hooks/useData";
+import {
+  useDepartments,
+  usePlannerEvents,
+  useProfiles,
+  useTasks,
+  type Task,
+} from "@/hooks/useData";
 import { supabase } from "@/integrations/supabase/client";
 import { dateKeyForTask, isPlannerMeetingTask, isTaskItem } from "@/lib/taskClassification";
 import { cn } from "@/lib/utils";
@@ -36,13 +42,15 @@ export const Route = createFileRoute("/_authenticated/dashboard")({
 
 function GovernanceOverviewPage() {
   const { tasks, refresh: refreshTasks } = useTasks();
+  const { tasks: plannerEvents, refresh: refreshPlannerEvents } = usePlannerEvents();
   const { profiles, refresh: refreshProfiles } = useProfiles();
   const { departments, refresh: refreshDepartments } = useDepartments([
     ...tasks.map((task) => task.department),
+    ...plannerEvents.map((event) => event.department),
     ...profiles.map((profile) => profile.department),
   ]);
   const [meetingSort, setMeetingSort] = useState<MeetingSortMode>("next");
-  const [meetingsCollapsed, setMeetingsCollapsed] = useState(true);
+  const [meetingsCollapsed, setMeetingsCollapsed] = useState(false);
   const [deletingMeetingId, setDeletingMeetingId] = useState<string | null>(null);
   const [now, setNow] = useState<Date | null>(null);
 
@@ -64,7 +72,7 @@ function GovernanceOverviewPage() {
   ).length;
 
   const scheduledTasks = taskItems.filter((task) => task.scheduled_date || task.due_date);
-  const plannerMeetingTasks = tasks.filter(isPlannerMeetingTask);
+  const plannerMeetingTasks = plannerEvents;
   const scheduledToday = scheduledTasks.filter((task) => dateKeyForTask(task) === todayKey);
   const scheduledTomorrow = scheduledTasks.filter((task) => dateKeyForTask(task) === tomorrowKey);
   const reviewTasks = scheduledTasks.filter((task) => taskMatchesText(task, "review"));
@@ -117,10 +125,20 @@ function GovernanceOverviewPage() {
   ];
 
   const refreshOverview = async () => {
-    await Promise.all([refreshTasks(), refreshProfiles(), refreshDepartments()]);
+    await Promise.all([
+      refreshTasks(),
+      refreshPlannerEvents(),
+      refreshProfiles(),
+      refreshDepartments(),
+    ]);
   };
 
   const deleteMeeting = async (task: Task) => {
+    if (task.id.startsWith("ics-")) {
+      toast.error("Imported calendar events cannot be deleted from this app.");
+      return;
+    }
+
     const confirmed = window.confirm(`Delete meeting "${task.title}"?`);
     if (!confirmed) return;
 
@@ -131,7 +149,7 @@ function GovernanceOverviewPage() {
       const accessToken = sessionData.session?.access_token;
       if (!accessToken) throw new Error("Please sign in before deleting meetings.");
 
-      const response = await fetch("/api/tasks", {
+      const response = await fetch("/api/planner/tasks", {
         method: "DELETE",
         headers: {
           authorization: `Bearer ${accessToken}`,
