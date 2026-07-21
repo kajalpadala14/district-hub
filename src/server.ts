@@ -229,6 +229,12 @@ async function handlePlannerTaskSave(request: Request) {
     const user = await authenticatedPlannerUser(request);
     const body = (await request.json()) as PlannerTaskSaveRequest;
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    console.info("[Planner Booking Debug] API received", {
+      method: request.method,
+      id: body.id ?? null,
+      selectedSlot: body.due_time ?? null,
+      scheduledDate: body.scheduled_date ?? body.due_date ?? null,
+    });
 
     if (request.method === "DELETE") {
       if (!body.id || body.id.startsWith("ics-")) {
@@ -259,6 +265,12 @@ async function handlePlannerTaskSave(request: Request) {
     }
 
     const payload = plannerTaskPayload(body);
+    console.info("[Planner Booking Debug] normalized database payload", {
+      selectedSlot: body.due_time ?? null,
+      databaseValue: payload.start_time,
+      databaseEndValue: payload.end_time,
+      date: payload.date,
+    });
 
     const shouldUpdate = request.method === "PUT" && body.id && !body.id.startsWith("ics-");
 
@@ -283,6 +295,11 @@ async function handlePlannerTaskSave(request: Request) {
         }
         throw error;
       }
+      console.info("[Planner Booking Debug] database saved", {
+        id: data.id,
+        databaseValue: data.start_time,
+        databaseEndValue: data.end_time,
+      });
       return Response.json({ task: data }, { status: 200 });
     }
 
@@ -297,6 +314,11 @@ async function handlePlannerTaskSave(request: Request) {
       }
       throw error;
     }
+    console.info("[Planner Booking Debug] database saved", {
+      id: data.id,
+      databaseValue: data.start_time,
+      databaseEndValue: data.end_time,
+    });
     return Response.json({ task: data }, { status: 201 });
   } catch (error) {
     console.error("[Planner Task Save] failed", error);
@@ -1010,6 +1032,11 @@ function buildEventDateLines(
   const startMinutes = minutesFromTime(time);
   const endTime = normalizeTime(explicitEndTime);
   const endMinutes = endTime ? minutesFromTime(endTime) : startMinutes + durationMinutes;
+  console.info("[Planner Booking Debug] generated ICS dates", {
+    selectedSlot: time,
+    dtstart: toIcsLocalDateTime(date, startMinutes),
+    dtend: toIcsLocalDateTime(date, endMinutes),
+  });
   return [
     `DTSTART;TZID=Asia/Kolkata:${toIcsLocalDateTime(date, startMinutes)}`,
     `DTEND;TZID=Asia/Kolkata:${toIcsLocalDateTime(date, endMinutes)}`,

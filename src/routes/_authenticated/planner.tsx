@@ -834,6 +834,12 @@ function EventDialog({
       calendar_sync_enabled: form.calendar_sync_enabled,
     };
 
+    console.info("[Planner Booking Debug] selected slot", {
+      selectedSlot: form.time,
+      normalizedSlot: dueTime,
+    });
+    console.info("[Planner Booking Debug] API payload", payload);
+
     setSaving(true);
     try {
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
@@ -1415,7 +1421,7 @@ function plannerEventPayload(payload: {
 }) {
   const startTime = payload.due_time ? toTimeInput(payload.due_time) : null;
   const duration = extractDurationMinutes(payload.description) ?? 30;
-  return {
+  const eventPayload = {
     title: payload.title,
     description: payload.description,
     location: extractDescriptionField(payload.description, "Venue") ?? payload.department,
@@ -1427,6 +1433,12 @@ function plannerEventPayload(payload: {
     priority: payload.priority,
     color: extractDescriptionField(payload.description, "Color"),
   };
+  console.info("[Planner Booking Debug] planner_events payload", {
+    selectedSlot: payload.due_time,
+    databaseStartTime: eventPayload.start_time,
+    databaseEndTime: eventPayload.end_time,
+  });
+  return eventPayload;
 }
 
 function plannerEventStatus(status: Task["status"], description: string | null) {

@@ -291,9 +291,17 @@ async function loadSource(sourceType, sourceId) {
 
 function buildProviderEvent(source, sourceType) {
   const date = source.due_date ?? source.scheduled_date ?? new Date().toISOString().slice(0, 10);
-  const time = source.due_time ?? "10:00";
+  const time = normalizeCalendarTime(source.due_time) ?? "10:00";
   const start = new Date(`${date}T${time}:00+05:30`);
   const end = new Date(start.getTime() + 30 * 60 * 1000);
+  console.info("[Planner Booking Debug] final provider calendar event", {
+    sourceType,
+    sourceId: source.id,
+    selectedSlot: source.due_time,
+    startDateTime: start.toISOString(),
+    endDateTime: end.toISOString(),
+    timeZone: "Asia/Kolkata",
+  });
   return {
     sourceType,
     title: source.title,
@@ -382,9 +390,14 @@ function buildIcs(tasks) {
     ...tasks.flatMap((task) => {
       const date = task.due_date ?? task.scheduled_date;
       if (!date) return [];
-      const time = task.due_time ?? "10:00";
+      const time = normalizeCalendarTime(task.due_time) ?? "10:00";
       const start = new Date(`${date}T${time}:00+05:30`);
       const end = new Date(start.getTime() + 30 * 60 * 1000);
+      console.info("[Planner Booking Debug] generated legacy ICS dates", {
+        selectedSlot: task.due_time,
+        dtstart: icsDate(start),
+        dtend: icsDate(end),
+      });
       return [
         "BEGIN:VEVENT",
         `UID:${task.id}@governance-review-dashboard`,
@@ -404,6 +417,16 @@ function buildIcs(tasks) {
 
 function icsDate(date) {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+function normalizeCalendarTime(value) {
+  if (!value) return null;
+  const match = String(value).trim().match(/^(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
 function escapeIcs(value) {

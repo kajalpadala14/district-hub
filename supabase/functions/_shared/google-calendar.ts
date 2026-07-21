@@ -6,10 +6,18 @@ type TaskRow = {
   description: string | null;
   due_date: string | null;
   due_time: string | null;
+  scheduled_date?: string | null;
+  end_time?: string | null;
   assignee_id: string | null;
   created_by: string;
   google_calendar_event_id: string | null;
+  calendar_event_html_link?: string | null;
+  calendar_sync_status?: string | null;
+  calendar_last_synced_at?: string | null;
+  calendar_sync_error?: string | null;
+  calendar_sync_enabled?: boolean | null;
   calendar_retry_count: number;
+  source_type?: "task" | "planner_event";
 };
 
 type ConnectionRow = {
@@ -55,7 +63,36 @@ export async function loadTask(taskId: string) {
   const { data, error } = await serviceClient.from("tasks").select("*").eq("id", taskId).maybeSingle();
   if (error) throw error;
   if (!data) throw new HttpError("Task not found", 404);
-  return data as TaskRow;
+  return { ...(data as TaskRow), source_type: "task" as const };
+}
+
+export async function loadCalendarSource(sourceId: string) {
+  const task = await serviceClient.from("tasks").select("*").eq("id", sourceId).maybeSingle();
+  if (task.error) throw task.error;
+  if (task.data) return { ...(task.data as TaskRow), source_type: "task" as const };
+
+  const { data, error } = await serviceClient
+    .from("planner_events")
+    .select("*")
+    .eq("id", sourceId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new HttpError("Calendar source not found", 404);
+
+  return {
+    id: data.id,
+    title: data.title,
+    description: data.description,
+    due_date: data.date,
+    scheduled_date: data.date,
+    due_time: data.is_all_day ? null : data.start_time,
+    end_time: data.is_all_day ? null : data.end_time,
+    assignee_id: null,
+    created_by: data.user_id,
+    google_calendar_event_id: null,
+    calendar_retry_count: 0,
+    source_type: "planner_event" as const,
+  } satisfies TaskRow;
 }
 
 export async function loadConnection(userId: string) {
@@ -143,6 +180,22 @@ export async function deleteCalendarEvent(eventId: string, accessToken: string) 
 
 export async function saveCalendarSuccess(task: TaskRow, userId: string, event: { id: string; htmlLink: string | null }) {
   const now = new Date().toISOString();
+  if (task.source_type === "planner_event") {
+    await serviceClient.from("calendar_events").upsert({
+      source_type: "planner_event",
+      source_id: task.id,
+      provider: "google",
+      user_id: userId,
+      external_event_id: event.id,
+      external_event_url: event.htmlLink,
+      sync_status: "synced",
+      sync_error: null,
+      retry_count: 0,
+      last_synced_at: now,
+    }, { onConflict: "source_type,source_id,provider,user_id" });
+    return;
+  }
+
   await serviceClient.from("task_calendar_events").upsert({
     task_id: task.id,
     user_id: userId,
@@ -170,6 +223,19 @@ export async function saveCalendarSuccess(task: TaskRow, userId: string, event: 
 }
 
 export async function saveCalendarFailure(task: TaskRow, message: string) {
+  if (task.source_type === "planner_event") {
+    await serviceClient.from("calendar_events").upsert({
+      source_type: "planner_event",
+      source_id: task.id,
+      provider: "google",
+      user_id: task.created_by,
+      sync_status: "failed",
+      sync_error: message,
+      retry_count: (task.calendar_retry_count ?? 0) + 1,
+    }, { onConflict: "source_type,source_id,provider,user_id" });
+    return;
+  }
+
   await serviceClient
     .from("tasks")
     .update({
@@ -227,10 +293,22 @@ export class HttpError extends Error {
 }
 
 function buildEvent(task: TaskRow) {
-  const date = task.due_date ?? new Date().toISOString().slice(0, 10);
-  const time = task.due_time ?? "17:00";
+  const date = task.due_date ?? task.scheduled_date ?? new Date().toISOString().slice(0, 10);
+  const time = normalizeCalendarTime(task.due_time) ?? "17:00";
+  const endTime = normalizeCalendarTime(task.end_time);
   const start = new Date(`${date}T${time}:00+05:30`);
-  const end = new Date(start.getTime() + 30 * 60 * 1000);
+  const end = endTime
+    ? new Date(`${date}T${endTime}:00+05:30`)
+    : new Date(start.getTime() + 30 * 60 * 1000);
+
+  console.info("[Planner Booking Debug] final Google calendar event", {
+    sourceType: task.source_type ?? "task",
+    sourceId: task.id,
+    selectedSlot: task.due_time,
+    startDateTime: start.toISOString(),
+    endDateTime: end.toISOString(),
+    timeZone: "Asia/Kolkata",
+  });
 
   return {
     summary: task.title,
@@ -251,6 +329,17 @@ function buildEvent(task: TaskRow) {
       ],
     },
   };
+}
+
+function normalizeCalendarTime(value: string | null | undefined) {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const match = trimmed.match(/^(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
 async function loadTaskCalendarEvent(taskId: string, userId: string) {
