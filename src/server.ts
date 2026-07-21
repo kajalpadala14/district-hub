@@ -172,13 +172,6 @@ async function handlePlannerIcsExport(request: Request, url: URL) {
     const plannerTasks = await fetchPlannerTasksForCalendar(settings.user_id);
     const feedMeta = plannerIcsFeedMeta(plannerTasks);
 
-    if (isPlannerIcsNotModified(request, feedMeta)) {
-      return new Response(null, {
-        status: 304,
-        headers: plannerIcsHeaders(feedMeta),
-      });
-    }
-
     const ics = buildPlannerIcsContent(plannerTasks);
 
     return new Response(ics, {
@@ -459,22 +452,16 @@ function plannerIcsFeedMeta(tasks: PlannerIcsTask[]): PlannerFeedMeta {
     if (!value) return newest;
     return !newest || Date.parse(value) > Date.parse(newest) ? value : newest;
   }, null);
-  const updatedSignature = newestUpdatedAt ? new Date(newestUpdatedAt).toISOString() : "none";
+  const updatedSignature = tasks
+    .map(
+      (task) =>
+        `${task.id}:${task.updated_at || task.created_at || "none"}:${Math.max(0, Number(task.sequence) || 0)}`,
+    )
+    .join("|");
   return {
-    etag: `"planner-events-${tasks.length}-${updatedSignature}"`,
+    etag: `"planner-events-${tasks.length}-${hashText(updatedSignature)}"`,
     lastModified: newestUpdatedAt ? new Date(newestUpdatedAt).toUTCString() : null,
   };
-}
-
-function isPlannerIcsNotModified(request: Request, meta: PlannerFeedMeta) {
-  const ifNoneMatch = request.headers.get("if-none-match");
-  if (ifNoneMatch?.split(",").map((value) => value.trim()).includes(meta.etag)) return true;
-
-  const ifModifiedSince = request.headers.get("if-modified-since");
-  if (!ifModifiedSince || !meta.lastModified) return false;
-  const since = Date.parse(ifModifiedSince);
-  const lastModified = Date.parse(meta.lastModified);
-  return Number.isFinite(since) && Number.isFinite(lastModified) && lastModified <= since;
 }
 
 function plannerIcsHeaders(meta: PlannerFeedMeta) {
@@ -489,7 +476,7 @@ function plannerIcsHeaders(meta: PlannerFeedMeta) {
 function plannerNoCacheHeaders(headers: HeadersInit = {}) {
   return {
     ...headers,
-    "cache-control": "private, no-cache, max-age=0, must-revalidate",
+    "cache-control": "no-store, no-cache, max-age=0, must-revalidate",
   };
 }
 

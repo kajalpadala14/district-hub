@@ -17,10 +17,10 @@ test("Planner ICS export resolves settings and planner events on every request",
 
 test("Planner ICS export emits update detection headers without cached planner data", () => {
   assert.match(serverSource, /function plannerIcsFeedMeta\(tasks: PlannerIcsTask\[\]\)/);
-  assert.match(serverSource, /etag: `"planner-events-\$\{tasks\.length\}-\$\{updatedSignature\}"`/);
+  assert.match(serverSource, /etag: `"planner-events-\$\{tasks\.length\}-\$\{hashText\(updatedSignature\)\}"`/);
   assert.match(serverSource, /"last-modified": meta\.lastModified/);
-  assert.match(serverSource, /"cache-control": "private, no-cache, max-age=0, must-revalidate"/);
-  assert.match(serverSource, /status: 304/);
+  assert.match(serverSource, /"cache-control": "no-store, no-cache, max-age=0, must-revalidate"/);
+  assert.doesNotMatch(serverSource, /status: 304/);
 });
 
 test("Planner ICS export returns a valid calendar even when no events exist", () => {
