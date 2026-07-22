@@ -14,6 +14,7 @@ import {
   Flag,
   ListChecks,
   MapPin,
+  MessageSquareText,
   Pencil,
   Pin,
   Plus,
@@ -89,6 +90,13 @@ type QuickFilter = "all" | "today" | "important";
 type CommentsFilter = "all" | "with-comments" | "without-comments";
 type SortMode = "latest" | "deadline" | "priority";
 type BulkSelectValue = "keep" | "none" | string;
+type TaskComment = {
+  id: string;
+  task_id: string;
+  comment: string;
+  commented_by: string | null;
+  created_at: string;
+};
 
 const statusLabels: Record<TaskStatus, string> = {
   todo: "Pending",
@@ -133,6 +141,8 @@ function TasksManagementPage() {
   const [bulkScheduledDate, setBulkScheduledDate] = useState("");
   const [bulkSaving, setBulkSaving] = useState(false);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [taskComments, setTaskComments] = useState<Record<string, TaskComment[]>>({});
+  const [savingCommentId, setSavingCommentId] = useState<string | null>(null);
 
   useEffect(() => {
     const department = new URLSearchParams(window.location.search).get("department");
@@ -140,6 +150,7 @@ function TasksManagementPage() {
   }, []);
 
   const taskItems = useMemo(() => tasks.filter(isTaskItem), [tasks]);
+  const taskItemIds = useMemo(() => taskItems.map((task) => task.id), [taskItems]);
   const departments = useMemo(
     () => Array.from(new Set(taskItems.map((task) => task.department).filter(Boolean) as string[])).sort(),
     [taskItems],
@@ -168,14 +179,15 @@ function TasksManagementPage() {
       assigneeProfile: profileFor(task.assignee_id),
       assignedBy: nameFor(task.created_by),
       displayStatus: displayStatusFor(task),
-      comments: commentsFor(task),
+      comments: commentsFor(task, taskComments[task.id]),
+      latestComment: taskComments[task.id]?.[0]?.comment ?? "",
     }));
-  }, [taskItems, profiles]);
+  }, [taskItems, profiles, taskComments]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return decoratedTasks
-      .filter(({ task, agency, assignee, comments, displayStatus }) => {
+      .filter(({ task, agency, assignee, comments, latestComment, displayStatus }) => {
         if (quickFilter === "today" && !isDateToday(task.due_date)) return false;
         if (quickFilter === "important" && task.priority !== "urgent") return false;
         if (statusFilter !== "all" && displayStatus !== statusFilter) return false;
@@ -191,10 +203,39 @@ function TasksManagementPage() {
           agency,
           task.department ?? "",
           assignee,
+          latestComment,
         ].some((value) => value.toLowerCase().includes(q));
       })
       .sort((a, b) => sortTasks(a.task, b.task, sortMode));
   }, [decoratedTasks, query, quickFilter, statusFilter, agencyFilter, departmentFilter, commentsFilter, sortMode]);
+
+  const loadTaskComments = async () => {
+    if (taskItemIds.length === 0) {
+      setTaskComments({});
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("task_comments")
+      .select("id, task_id, comment, commented_by, created_at")
+      .in("task_id", taskItemIds)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.warn("[Task Comments] Load failed", error);
+      return;
+    }
+
+    const grouped = (data ?? []).reduce<Record<string, TaskComment[]>>((acc, comment) => {
+      acc[comment.task_id] = [...(acc[comment.task_id] ?? []), comment];
+      return acc;
+    }, {});
+    setTaskComments(grouped);
+  };
+
+  useEffect(() => {
+    void loadTaskComments();
+  }, [taskItemIds.join("|")]);
 
   useEffect(() => {
     setSelectedIds((ids) => ids.filter((id) => filtered.some((item) => item.task.id === id)));
@@ -433,6 +474,35 @@ function TasksManagementPage() {
     toast.success("Task pinned for follow-up");
   };
 
+  const handleSaveComment = async (task: Task, comment: string) => {
+    const trimmed = comment.trim();
+    if (!trimmed) {
+      toast.error("Enter a follow-up comment first");
+      return;
+    }
+    if (!currentUserId) {
+      toast.error("Please sign in before adding comments.");
+      return;
+    }
+
+    setSavingCommentId(task.id);
+    try {
+      const { error } = await supabase.from("task_comments").insert({
+        task_id: task.id,
+        comment: trimmed,
+        commented_by: currentUserId,
+      });
+      if (error) throw error;
+      await loadTaskComments();
+      await refreshTasks();
+      toast.success("Comment saved");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Comment save failed");
+    } finally {
+      setSavingCommentId(null);
+    }
+  };
+
   const handleExport = () => {
     if (filtered.length === 0) {
       toast.error("No tasks to export");
@@ -654,6 +724,8 @@ function TasksManagementPage() {
                 bulkMode={bulkMode}
                 selected={selectedIds.includes(item.task.id)}
                 onToggleSelected={toggleTaskSelection}
+                onSaveComment={handleSaveComment}
+                savingComment={savingCommentId === item.task.id}
                 onEdit={(task) => { setEditing(task); setDialogOpen(true); }}
                 onScheduleMeeting={handleScheduleMeeting}
                 onExtendDeadline={handleExtendDeadline}
@@ -696,7 +768,7 @@ function TasksManagementPage() {
                     </TableCell>
                   </TableRow>
                 )}
-                {filtered.map(({ task, assignee, assigneeProfile, assignedBy, agency, comments, displayStatus }, index) => (
+                {filtered.map(({ task, assignee, assigneeProfile, assignedBy, agency, comments, latestComment, displayStatus }, index) => (
                   <TableRow key={task.id} className="bg-card/70">
                     {bulkMode && (
                       <TableCell>
@@ -731,7 +803,13 @@ function TasksManagementPage() {
                       </p>
                     </TableCell>
                     <TableCell>
-                      <span className="text-sm text-muted-foreground">{comments}</span>
+                      <TaskCommentComposer
+                        task={task}
+                        comments={comments}
+                        latestComment={latestComment}
+                        saving={savingCommentId === task.id}
+                        onSave={handleSaveComment}
+                      />
                     </TableCell>
                     <TableCell className="text-sm">{assignee}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">
@@ -941,6 +1019,7 @@ type TaskListItem = {
   assignedBy: string;
   displayStatus: "pending" | "in_progress" | "completed" | "overdue";
   comments: string;
+  latestComment: string;
 };
 
 type TaskActionHandlers = {
@@ -952,6 +1031,11 @@ type TaskActionHandlers = {
   onMarkImportant: (task: Task) => void | Promise<void>;
   onPin: () => void;
   onDelete: (task: Task) => void | Promise<void>;
+};
+
+type TaskCommentAction = {
+  onSaveComment: (task: Task, comment: string) => void | Promise<void>;
+  savingComment?: boolean;
 };
 
 function TaskMobileCard({
@@ -968,14 +1052,16 @@ function TaskMobileCard({
   onMarkImportant,
   onPin,
   onDelete,
+  onSaveComment,
+  savingComment = false,
 }: {
   index: number;
   item: TaskListItem;
   bulkMode?: boolean;
   selected?: boolean;
   onToggleSelected?: (taskId: string) => void;
-} & TaskActionHandlers) {
-  const { task, agency, assignee, assigneeProfile, assignedBy, comments, displayStatus } = item;
+} & TaskActionHandlers & TaskCommentAction) {
+  const { task, agency, assignee, assigneeProfile, assignedBy, comments, latestComment, displayStatus } = item;
   return (
     <article className={cn("min-w-0 rounded-md border bg-card p-4 shadow-sm", selected && "border-primary/60 ring-2 ring-primary/15")}>
       <div className="flex items-start justify-between gap-3">
@@ -1016,7 +1102,18 @@ function TaskMobileCard({
         <TaskMeta label="Assigned To" value={assignee} />
         <TaskMeta label="Allocated" value={formatDate(task.created_at)} />
         <TaskMeta label="Deadline" value={formatDate(task.due_date)} />
-        <TaskMeta label="Comments" value={comments} />
+        <div className="sm:col-span-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Comments</p>
+          <div className="mt-1">
+            <TaskCommentComposer
+              task={task}
+              comments={comments}
+              latestComment={latestComment}
+              saving={savingComment}
+              onSave={onSaveComment}
+            />
+          </div>
+        </div>
       </div>
 
       <TaskActions
@@ -1035,6 +1132,79 @@ function TaskMobileCard({
         className="mt-4 justify-start rounded-md bg-muted/25 p-1"
       />
     </article>
+  );
+}
+
+function TaskCommentComposer({
+  task,
+  comments,
+  latestComment,
+  saving,
+  onSave,
+}: {
+  task: Task;
+  comments: string;
+  latestComment: string;
+  saving: boolean;
+  onSave: (task: Task, comment: string) => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const preview = latestComment || comments;
+
+  const handleCancel = () => {
+    setDraft("");
+    setOpen(false);
+  };
+
+  const handleSave = async () => {
+    await onSave(task, draft);
+    setDraft("");
+    setOpen(false);
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="group flex w-full min-w-[8rem] items-start gap-2 rounded-md border border-transparent px-2 py-1.5 text-left text-sm transition hover:border-primary/25 hover:bg-primary/5"
+          aria-label={`Add comment for ${task.title}`}
+        >
+          <MessageSquareText className="mt-0.5 h-4 w-4 shrink-0 text-primary/75" aria-hidden="true" />
+          <span className="min-w-0">
+            <span className={cn("block line-clamp-2 break-words", latestComment ? "text-foreground" : "text-muted-foreground")}>
+              {preview}
+            </span>
+            <span className="mt-1 block text-[11px] font-semibold uppercase tracking-wide text-primary opacity-0 transition group-hover:opacity-100">
+              Follow-up
+            </span>
+          </span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[min(20rem,calc(100vw-2rem))] rounded-lg p-3 shadow-lg">
+        <div className="space-y-3">
+          <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+            Steno / Follow-up Comment
+          </p>
+          <Textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="currently portal itself is not allowing for musterrolle to be generated..."
+            className="min-h-28 resize-none text-sm leading-relaxed"
+            autoFocus
+          />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={handleCancel} disabled={saving}>
+              Cancel
+            </Button>
+            <Button type="button" size="sm" onClick={handleSave} disabled={saving || !draft.trim()}>
+              {saving ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

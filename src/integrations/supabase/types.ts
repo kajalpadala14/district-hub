@@ -233,6 +233,7 @@ export type Database = {
           calendar_sync_enabled: boolean;
           calendar_sync_error: string | null;
           calendar_sync_status: Database["public"]["Enums"]["calendar_sync_status"];
+          comments_count: number;
           completed_at: string | null;
           created_at: string;
           created_by: string;
@@ -245,6 +246,7 @@ export type Database = {
           priority: Database["public"]["Enums"]["task_priority"];
           scheduled_date: string | null;
           status: Database["public"]["Enums"]["task_status"];
+          task_number: string | null;
           title: string;
           updated_at: string;
         };
@@ -256,6 +258,7 @@ export type Database = {
           calendar_sync_enabled?: boolean;
           calendar_sync_error?: string | null;
           calendar_sync_status?: Database["public"]["Enums"]["calendar_sync_status"];
+          comments_count?: number;
           completed_at?: string | null;
           created_at?: string;
           created_by: string;
@@ -268,6 +271,7 @@ export type Database = {
           priority?: Database["public"]["Enums"]["task_priority"];
           scheduled_date?: string | null;
           status?: Database["public"]["Enums"]["task_status"];
+          task_number?: string | null;
           title: string;
           updated_at?: string;
         };
@@ -279,6 +283,7 @@ export type Database = {
           calendar_sync_enabled?: boolean;
           calendar_sync_error?: string | null;
           calendar_sync_status?: Database["public"]["Enums"]["calendar_sync_status"];
+          comments_count?: number;
           completed_at?: string | null;
           created_at?: string;
           created_by?: string;
@@ -291,8 +296,33 @@ export type Database = {
           priority?: Database["public"]["Enums"]["task_priority"];
           scheduled_date?: string | null;
           status?: Database["public"]["Enums"]["task_status"];
+          task_number?: string | null;
           title?: string;
           updated_at?: string;
+        };
+        Relationships: [];
+      };
+      task_comments: {
+        Row: {
+          comment: string;
+          commented_by: string | null;
+          created_at: string;
+          id: string;
+          task_id: string;
+        };
+        Insert: {
+          comment: string;
+          commented_by?: string | null;
+          created_at?: string;
+          id?: string;
+          task_id: string;
+        };
+        Update: {
+          comment?: string;
+          commented_by?: string | null;
+          created_at?: string;
+          id?: string;
+          task_id?: string;
         };
         Relationships: [];
       };
