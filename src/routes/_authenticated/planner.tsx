@@ -854,8 +854,8 @@ function EventDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="overflow-hidden border-0 bg-muted p-0 shadow-2xl sm:max-w-md">
-        <DialogHeader className="px-5 pt-5">
+      <DialogContent className="max-h-[calc(100dvh-1.5rem)] w-[calc(100vw-1.5rem)] max-w-2xl overflow-hidden border-0 bg-muted p-0 shadow-2xl sm:max-h-[calc(100dvh-3rem)]">
+        <DialogHeader className="px-4 pt-4 sm:px-5 sm:pt-5">
           <DialogTitle className="text-xl">
             {isEditMode ? "Edit Meeting" : "New Meeting"}
           </DialogTitle>
@@ -864,7 +864,7 @@ function EventDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={submit} className="space-y-4 px-5 pb-5">
+        <form onSubmit={submit} className="max-h-[calc(100dvh-7rem)] space-y-4 overflow-y-auto px-4 pb-4 sm:max-h-[calc(100dvh-9rem)] sm:px-5 sm:pb-5">
           <div className="space-y-1.5">
             <FieldLabel htmlFor="event-title">Title *</FieldLabel>
             <Input
@@ -872,38 +872,38 @@ function EventDialog({
               value={form.title}
               onChange={(e) => setForm({ ...form, title: e.target.value })}
               placeholder="Event title"
-              className="bg-background"
+              className="min-w-0 bg-background"
             />
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
-            <div className="space-y-1.5">
+          <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="min-w-0 space-y-1.5">
               <FieldLabel htmlFor="event-date">Date</FieldLabel>
               <Input
                 id="event-date"
                 type="date"
                 value={form.date}
                 onChange={(e) => setForm({ ...form, date: e.target.value })}
-                className="bg-background"
+                className="min-w-0 bg-background"
               />
             </div>
-            <div className="space-y-1.5">
+            <div className="min-w-0 space-y-1.5">
               <FieldLabel htmlFor="event-time">Time</FieldLabel>
               <Input
                 id="event-time"
                 type="time"
                 value={form.time}
                 onChange={(e) => setForm({ ...form, time: e.target.value })}
-                className="bg-background"
+                className="min-w-0 bg-background"
               />
             </div>
-            <div className="space-y-1.5">
+            <div className="min-w-0 space-y-1.5">
               <FieldLabel>Duration</FieldLabel>
               <Select
                 value={form.duration}
                 onValueChange={(value) => setForm({ ...form, duration: value })}
               >
-                <SelectTrigger className="bg-background">
+                <SelectTrigger className="min-w-0 bg-background">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -917,14 +917,14 @@ function EventDialog({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
+          <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="min-w-0 space-y-1.5">
               <FieldLabel>Status</FieldLabel>
               <Select
                 value={form.status}
                 onValueChange={(value) => setForm({ ...form, status: value })}
               >
-                <SelectTrigger className="bg-background">
+                <SelectTrigger className="min-w-0 bg-background">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -934,9 +934,9 @@ function EventDialog({
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
+            <div className="min-w-0 space-y-1.5">
               <FieldLabel>Color</FieldLabel>
-              <div className="flex h-10 items-center gap-1.5">
+              <div className="flex min-h-10 flex-wrap items-center gap-1.5 rounded-md bg-background px-2 py-1.5">
                 {eventColors.map((color) => (
                   <button
                     key={color}
@@ -954,14 +954,14 @@ function EventDialog({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
+          <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="min-w-0 space-y-1.5">
               <FieldLabel>Department (Optional)</FieldLabel>
               <Select
                 value={form.department}
                 onValueChange={(value) => setForm({ ...form, department: value })}
               >
-                <SelectTrigger className="bg-background">
+                <SelectTrigger className="min-w-0 bg-background">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -974,14 +974,14 @@ function EventDialog({
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
+            <div className="min-w-0 space-y-1.5">
               <FieldLabel htmlFor="event-venue">Venue</FieldLabel>
               <Input
                 id="event-venue"
                 value={form.venue}
                 onChange={(e) => setForm({ ...form, venue: e.target.value })}
                 placeholder="Meeting room"
-                className="bg-background"
+                className="min-w-0 bg-background"
               />
             </div>
           </div>
@@ -990,12 +990,12 @@ function EventDialog({
             <FieldLabel htmlFor="event-attendees">Attendees</FieldLabel>
             <Input
               id="event-attendees"
-              value={form.attendees}
-              onChange={(e) => setForm({ ...form, attendees: e.target.value })}
-              placeholder="Comma separated names"
-              className="bg-background"
-            />
-          </div>
+            value={form.attendees}
+            onChange={(e) => setForm({ ...form, attendees: e.target.value })}
+            placeholder="Comma separated names"
+            className="min-w-0 bg-background"
+          />
+        </div>
 
           <div className="space-y-1.5">
             <FieldLabel htmlFor="event-notes">Description / Notes</FieldLabel>
@@ -1003,17 +1003,17 @@ function EventDialog({
               id="event-notes"
               value={form.notes}
               onChange={(e) => setForm({ ...form, notes: e.target.value })}
-              placeholder="Notes, agenda, comments..."
-              rows={4}
-              className="resize-none bg-background"
-            />
-          </div>
+            placeholder="Notes, agenda, comments..."
+            rows={4}
+            className="min-w-0 resize-none bg-background"
+          />
+        </div>
 
-          <DialogFooter className="grid grid-cols-2 gap-2 sm:space-x-0">
-            <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
+          <DialogFooter className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:space-x-0">
+            <Button type="button" variant="secondary" onClick={() => onOpenChange(false)} className="w-full">
               Cancel
             </Button>
-            <Button type="submit" disabled={saving}>
+            <Button type="submit" disabled={saving} className="w-full">
               {saving ? "Saving..." : "Save Meeting"}
             </Button>
           </DialogFooter>
