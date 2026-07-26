@@ -30,7 +30,21 @@ function createSupabaseFetch(supabaseKey: string): typeof fetch {
   };
 }
 
+function ensureWebSocketPolyfill() {
+  if (typeof globalThis.WebSocket === 'undefined') {
+    class DummyWebSocket {
+      constructor() {}
+      addEventListener() {}
+      removeEventListener() {}
+      send() {}
+      close() {}
+    }
+    (globalThis as unknown as { WebSocket: unknown }).WebSocket = DummyWebSocket;
+  }
+}
+
 function createSupabaseAdminClient() {
+  ensureWebSocketPolyfill();
   const { supabaseUrl, supabaseServiceRoleKey } = getSupabaseServerEnv(true);
 
   return createClient<Database>(supabaseUrl, supabaseServiceRoleKey!, {
@@ -41,7 +55,10 @@ function createSupabaseAdminClient() {
       storage: undefined,
       persistSession: false,
       autoRefreshToken: false,
-    }
+    },
+    realtime: {
+      disabled: true,
+    },
   });
 }
 
