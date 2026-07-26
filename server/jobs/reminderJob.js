@@ -24,7 +24,7 @@ import { setLastReminderCheckTimestamp } from "../scheduler/scheduler.js";
  * 4. Cancelled meeting notifications.
  */
 export async function runReminderJob() {
-  const timeZone = env.timezone;
+  const timeZone = env.timezone || "Asia/Kolkata";
   const todayStr = getTodayDateString(timeZone);
 
   try {
@@ -51,13 +51,13 @@ export async function runReminderJob() {
       // Check if meeting time or date was updated
       await handleRescheduledMeeting(meeting);
 
-      // 1-Hour Reminder Window (50 to 65 minutes before start)
-      if (diffMinutes >= 50 && diffMinutes <= 65) {
+      // 1-Hour Reminder Window (15 to 65 minutes before start)
+      if (diffMinutes > 15 && diffMinutes <= 65) {
         await handleOneHourReminder(meeting);
       }
 
-      // 10-Minute Reminder Window (5 to 15 minutes before start)
-      if (diffMinutes >= 5 && diffMinutes <= 15) {
+      // 10-Minute Reminder Window (0 to 15 minutes before start)
+      if (diffMinutes > 0 && diffMinutes <= 15) {
         await handleTenMinReminder(meeting);
       }
 
@@ -176,17 +176,42 @@ async function trackMeetingState(meeting) {
   });
 }
 
-function parseMeetingStartToMs(dateStr, timeStr, timeZone) {
+/**
+ * Accurately parses meeting date and start_time into epoch milliseconds using target timeZone offset.
+ */
+function parseMeetingStartToMs(dateStr, timeStr, timeZone = "Asia/Kolkata") {
   try {
     const [year, month, day] = dateStr.split("-").map(Number);
-    const [hours, minutes] = timeStr.split(":").map(Number);
+    const timeParts = timeStr.split(":").map(Number);
+    const hours = timeParts[0] || 0;
+    const minutes = timeParts[1] || 0;
+    const seconds = timeParts[2] || 0;
 
-    const isoString = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:00`;
+    const offsetStr = getTimeZoneOffsetString(new Date(Date.UTC(year, month - 1, day, hours, minutes, seconds)), timeZone);
+    const isoString = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}${offsetStr}`;
 
-    const targetDate = new Date(isoString);
-    return targetDate.getTime();
+    return new Date(isoString).getTime();
   } catch {
     return Date.now();
+  }
+}
+
+function getTimeZoneOffsetString(date, timeZone) {
+  try {
+    const format = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      timeZoneName: "longOffset",
+    });
+    const parts = format.formatToParts(date);
+    const offsetPart = parts.find((p) => p.type === "timeZoneName");
+    if (offsetPart && offsetPart.value) {
+      const match = offsetPart.value.match(/GMT([+-]\d{2}:\d{2})/);
+      if (match) return match[1];
+      if (offsetPart.value === "GMT" || offsetPart.value === "UTC") return "Z";
+    }
+    return "+05:30";
+  } catch {
+    return "+05:30";
   }
 }
 
