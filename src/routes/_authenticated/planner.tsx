@@ -1390,13 +1390,13 @@ async function savePlannerEventFallback(
   currentUserId: string,
 ) {
   const result = id
-    ? await supabase
+    ? await (supabase as any)
         .from("planner_events")
         .update(plannerEventPayload(payload))
         .eq("id", id)
         .select("id")
         .single()
-    : await supabase
+    : await (supabase as any)
         .from("planner_events")
         .insert({ ...plannerEventPayload(payload), user_id: currentUserId })
         .select("id")
