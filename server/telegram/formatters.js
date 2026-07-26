@@ -34,7 +34,7 @@ export function formatTime12h(timeStr) {
 
   const ampm = hours >= 12 ? "PM" : "AM";
   hours = hours % 12;
-  hours = hours ? hours : 12; // '0' should be '12'
+  hours = hours ? hours : 12;
 
   return `${hours}:${minutes} ${ampm}`;
 }
@@ -116,26 +116,39 @@ export function getClockEmoji(timeStr) {
 }
 
 /**
- * Extracts a join URL from explicit join_link, location, or description text.
+ * Extracts a join URL from explicit join_link, location, description, or title text.
  * @param {Object} meeting
  * @returns {string|null}
  */
 export function extractJoinLink(meeting) {
+  if (!meeting) return null;
+
   if (meeting.join_link && isValidUrl(meeting.join_link)) {
     return meeting.join_link.trim();
   }
   if (meeting.location && isValidUrl(meeting.location)) {
     return meeting.location.trim();
   }
-  if (meeting.description) {
-    // Check if description has "Link: https://..." or "Join: https://..." or "Venue: https://..."
-    const linkLabelMatch = meeting.description.match(/(?:Link|Join|URL|Meeting Link|Venue):\s*(https?:\/\/[^\s<]+)/i);
+
+  const fieldsToSearch = [meeting.location, meeting.description, meeting.title].filter(Boolean);
+
+  for (const text of fieldsToSearch) {
+    const linkLabelMatch = text.match(/(?:Link|Join|URL|Meeting Link|Venue|Meet):\s*(https?:\/\/[^\s<"']+)/i);
     if (linkLabelMatch && isValidUrl(linkLabelMatch[1])) {
       return linkLabelMatch[1].trim();
     }
-    const match = meeting.description.match(/https?:\/\/[^\s<]+/i);
-    if (match && isValidUrl(match[0])) return match[0].trim();
+
+    const videoConfMatch = text.match(/(https?:\/\/(?:meet\.google\.com|zoom\.us|teams\.microsoft\.com|meet\.jit\.si|webex\.com)[^\s<"']+)/i);
+    if (videoConfMatch && isValidUrl(videoConfMatch[1])) {
+      return videoConfMatch[1].trim();
+    }
+
+    const rawMatch = text.match(/(https?:\/\/[^\s<"']+)/i);
+    if (rawMatch && isValidUrl(rawMatch[1])) {
+      return rawMatch[1].trim();
+    }
   }
+
   return null;
 }
 
@@ -191,7 +204,7 @@ export function formatMorningDigest(meetings, dateStr) {
 
       message += `${emoji} ${timeRange}\n📌 ${titleStr}\n`;
       if (joinUrl) {
-        message += `🔗 Join Meeting\n`;
+        message += `🔗 <b>Join Link:</b> ${escapeHtml(joinUrl)}\n`;
       }
       message += `\n`;
     }
@@ -216,7 +229,13 @@ export function formatOneHourReminder(meeting) {
   const timeRange = formatTimeRange(meeting.start_time, meeting.end_time);
   const joinUrl = extractJoinLink(meeting);
 
-  const text = `⏰ <b>Reminder</b>\n\n📌 <b>${title}</b>\n\n${clockEmoji} <b>Time:</b>\n${timeRange}\n\nStarts in 1 hour.`;
+  let text = `⏰ <b>Reminder</b>\n\n📌 <b>${title}</b>\n\n${clockEmoji} <b>Time:</b>\n${timeRange}`;
+
+  if (joinUrl) {
+    text += `\n\n🔗 <b>Join Meeting:</b>\n${escapeHtml(joinUrl)}`;
+  }
+
+  text += `\n\nStarts in 1 hour.`;
 
   return {
     text,
@@ -235,7 +254,13 @@ export function formatTenMinReminder(meeting) {
   const timeRange = formatTimeRange(meeting.start_time, meeting.end_time);
   const joinUrl = extractJoinLink(meeting);
 
-  const text = `🚨 <b>Meeting starts in 10 minutes!</b>\n\n📌 <b>${title}</b>\n\n${clockEmoji} <b>Time:</b>\n${timeRange}\n\nPlease join on time.`;
+  let text = `🚨 <b>Meeting starts in 10 minutes!</b>\n\n📌 <b>${title}</b>\n\n${clockEmoji} <b>Time:</b>\n${timeRange}`;
+
+  if (joinUrl) {
+    text += `\n\n🔗 <b>Join Meeting:</b>\n${escapeHtml(joinUrl)}`;
+  }
+
+  text += `\n\nPlease join on time.`;
 
   return {
     text,
@@ -254,7 +279,13 @@ export function formatFiveMinReminder(meeting) {
   const timeRange = formatTimeRange(meeting.start_time, meeting.end_time);
   const joinUrl = extractJoinLink(meeting);
 
-  const text = `🚨 <b>Meeting starts in 5 minutes!</b>\n\n📌 <b>${title}</b>\n\n${clockEmoji} <b>Time:</b>\n${timeRange}\n\nPlease join immediately.`;
+  let text = `🚨 <b>Meeting starts in 5 minutes!</b>\n\n📌 <b>${title}</b>\n\n${clockEmoji} <b>Time:</b>\n${timeRange}`;
+
+  if (joinUrl) {
+    text += `\n\n🔗 <b>Join Meeting:</b>\n${escapeHtml(joinUrl)}`;
+  }
+
+  text += `\n\nPlease join immediately.`;
 
   return {
     text,
