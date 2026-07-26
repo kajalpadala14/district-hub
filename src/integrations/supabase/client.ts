@@ -28,7 +28,21 @@ function createSupabaseFetch(supabaseKey: string): typeof fetch {
 }
 
 
+function ensureWebSocketPolyfill() {
+  if (typeof window === 'undefined' && typeof globalThis.WebSocket === 'undefined') {
+    class DummyWebSocket {
+      constructor() {}
+      addEventListener() {}
+      removeEventListener() {}
+      send() {}
+      close() {}
+    }
+    (globalThis as unknown as { WebSocket: unknown }).WebSocket = DummyWebSocket;
+  }
+}
+
 function createSupabaseClient() {
+  ensureWebSocketPolyfill();
   const { supabaseUrl, supabasePublishableKey } = getPublicEnv();
 
   return createClient<Database>(supabaseUrl, supabasePublishableKey, {
@@ -39,7 +53,7 @@ function createSupabaseClient() {
       storage: typeof window !== 'undefined' ? localStorage : undefined,
       persistSession: true,
       autoRefreshToken: true,
-    }
+    },
   });
 }
 

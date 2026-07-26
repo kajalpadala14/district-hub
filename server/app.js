@@ -4,6 +4,7 @@ import { errorHandler, notFound } from "./middleware/errorHandler.js";
 import { authRouter } from "./routes/auth.routes.js";
 import { taskRouter } from "./routes/task.routes.js";
 import { calendarRouter } from "./routes/calendar.routes.js";
+import { telegramRouter } from "./routes/telegram.routes.js";
 
 export function createApp() {
   const app = express();
@@ -20,6 +21,7 @@ export function createApp() {
   app.use("/auth", authRouter);
   app.use("/tasks", taskRouter);
   app.use("/calendar", calendarRouter);
+  app.use("/telegram", telegramRouter);
 
   app.use(notFound);
   app.use(errorHandler);
