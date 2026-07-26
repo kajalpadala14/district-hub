@@ -1,13 +1,48 @@
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve, dirname } from "node:path";
 import { supabaseAdmin } from "../config/supabase.js";
 
 /**
  * Service to interact with Supabase database for planner_events/meetings
  * and handle reminder logging to prevent duplicates across server restarts.
- * Includes in-memory fallback cache if telegram_reminder_logs table hasn't been created yet.
+ * Persists fallback logs to local disk file (server/data/telegram_logs.json) if Supabase table is missing.
  */
 
+const LOCAL_STORAGE_PATH = resolve(process.cwd(), "server/data/telegram_logs.json");
 const inMemoryReminderLogs = new Set();
 let isTableMissingWarningLogged = false;
+
+// Load local fallback cache on startup
+loadLocalFallbackCache();
+
+function loadLocalFallbackCache() {
+  try {
+    if (existsSync(LOCAL_STORAGE_PATH)) {
+      const data = readFileSync(LOCAL_STORAGE_PATH, "utf8");
+      const items = JSON.parse(data);
+      if (Array.isArray(items)) {
+        for (const item of items) {
+          inMemoryReminderLogs.add(item);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[MeetingService] Error loading local fallback cache:", err.message);
+  }
+}
+
+function saveLocalFallbackCache() {
+  try {
+    const dir = dirname(LOCAL_STORAGE_PATH);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    const items = Array.from(inMemoryReminderLogs);
+    writeFileSync(LOCAL_STORAGE_PATH, JSON.stringify(items, null, 2), "utf8");
+  } catch (err) {
+    console.error("[MeetingService] Error saving local fallback cache:", err.message);
+  }
+}
 
 /**
  * Fetches meetings scheduled for a specific date (YYYY-MM-DD).
@@ -87,7 +122,7 @@ export async function getUpcomingMeetings(startDateStr) {
 
 /**
  * Checks if a specific reminder has already been logged in telegram_reminder_logs.
- * Fallbacks to in-memory cache if database table is missing.
+ * Fallbacks to disk file cache if database table is missing.
  *
  * @param {string} meetingId
  * @param {string} reminderType
@@ -119,6 +154,7 @@ export async function hasReminderBeenSent(meetingId, reminderType, scheduledTime
 
     if (data) {
       inMemoryReminderLogs.add(cacheKey);
+      saveLocalFallbackCache();
       return true;
     }
 
@@ -129,8 +165,7 @@ export async function hasReminderBeenSent(meetingId, reminderType, scheduledTime
 }
 
 /**
- * Persists sent reminder details into telegram_reminder_logs table.
- * Fallbacks to in-memory cache if table is missing.
+ * Persists sent reminder details into telegram_reminder_logs table and disk file.
  *
  * @param {string} meetingId
  * @param {string} reminderType
@@ -141,6 +176,7 @@ export async function hasReminderBeenSent(meetingId, reminderType, scheduledTime
 export async function logReminderSent(meetingId, reminderType, scheduledTime, payload = {}) {
   const cacheKey = `${meetingId}_${reminderType}_${scheduledTime}`;
   inMemoryReminderLogs.add(cacheKey);
+  saveLocalFallbackCache();
 
   try {
     const { error } = await supabaseAdmin
@@ -198,7 +234,7 @@ export async function getLastReminderLog(meetingId, reminderType) {
 function logTableMissingNoticeOnce() {
   if (!isTableMissingWarningLogged) {
     console.warn(
-      "[MeetingService] Notice: Table 'public.telegram_reminder_logs' does not exist in Supabase database yet. Using in-memory tracking fallback. Run migration '20260726100000_telegram_reminder_system.sql' in Supabase SQL Editor to enable database persistence."
+      "[MeetingService] Notice: Table 'public.telegram_reminder_logs' does not exist in Supabase yet. Persisting logs to server/data/telegram_logs.json fallback file across server restarts."
     );
     isTableMissingWarningLogged = true;
   }

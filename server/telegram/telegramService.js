@@ -2,8 +2,7 @@ import { env } from "../config/env.js";
 
 /**
  * Sends a message to Telegram group or target Chat ID with exponential backoff retries.
- * Deterministic production implementation: uses TELEGRAM_GROUP_CHAT_ID or TEST_GROUP_CHAT_ID from .env.
- * Does not perform automatic getUpdates calls during production reminder flow.
+ * Logs specific categories: Digest Sent, Reminder Sent, Cancellation Sent, Update Sent, Retry Attempt, Telegram API Errors.
  *
  * @param {string} text - HTML formatted message body
  * @param {Object} [options]
@@ -61,6 +60,11 @@ export async function sendTelegramMessage(text, options = {}) {
       if (response.ok && data.ok) {
         logSuccessCategory(messageType, targetChatId, data.result?.message_id);
         return true;
+      }
+
+      if (data.error_code === 400 && data.description?.includes("chat not found")) {
+        console.error(`[TelegramService] [Telegram API Errors] Chat ID ${targetChatId} not found. Please ensure @district_hub_bot is added to your Telegram group or update TELEGRAM_GROUP_CHAT_ID in .env.`);
+        return false; // Do not retry invalid chat ID
       }
 
       console.error(`[TelegramService] [Telegram API Errors] Error on attempt ${attempt}/${maxRetries}:`, data);
