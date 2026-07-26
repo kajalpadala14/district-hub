@@ -10,6 +10,7 @@ import {
   formatMeetingUpdated,
   formatOneHourReminder,
   formatTenMinReminder,
+  formatFiveMinReminder,
   formatTimeRange,
 } from "../telegram/formatters.js";
 import { sendTelegramMessage } from "../telegram/telegramService.js";
@@ -20,8 +21,9 @@ import { setLastReminderCheckTimestamp } from "../scheduler/scheduler.js";
  * Runs every minute to process:
  * 1. 1-Hour before meeting reminders.
  * 2. 10-Minute before meeting reminders.
- * 3. Rescheduled/Updated meeting notifications.
- * 4. Cancelled meeting notifications.
+ * 3. 5-Minute before meeting reminders.
+ * 4. Rescheduled/Updated meeting notifications.
+ * 5. Cancelled meeting notifications.
  */
 export async function runReminderJob() {
   const timeZone = env.timezone || "Asia/Kolkata";
@@ -56,9 +58,14 @@ export async function runReminderJob() {
         await handleOneHourReminder(meeting);
       }
 
-      // 10-Minute Reminder Window (0 to 15 minutes before start)
-      if (diffMinutes > 0 && diffMinutes <= 15) {
+      // 10-Minute Reminder Window (5 to 15 minutes before start)
+      if (diffMinutes > 5 && diffMinutes <= 15) {
         await handleTenMinReminder(meeting);
+      }
+
+      // 5-Minute Reminder Window (0 to 5 minutes before start)
+      if (diffMinutes > 0 && diffMinutes <= 5) {
+        await handleFiveMinReminder(meeting);
       }
 
       await trackMeetingState(meeting);
@@ -102,6 +109,27 @@ async function handleTenMinReminder(meeting) {
 
   if (sent) {
     await logReminderSent(meeting.id, "10_min", slotKey, {
+      title: meeting.title,
+      start_time: meeting.start_time,
+      end_time: meeting.end_time,
+      date: meeting.date,
+    });
+  }
+}
+
+async function handleFiveMinReminder(meeting) {
+  const slotKey = `${meeting.date}_${meeting.start_time}`;
+  const alreadySent = await hasReminderBeenSent(meeting.id, "5_min", slotKey);
+
+  if (alreadySent) return;
+
+  console.log(`[ReminderJob] [Reminder Sent] Triggering 5-minute reminder for meeting "${meeting.title}" (${meeting.id})`);
+
+  const { text, reply_markup } = formatFiveMinReminder(meeting);
+  const sent = await sendTelegramMessage(text, { type: "reminder", reply_markup });
+
+  if (sent) {
+    await logReminderSent(meeting.id, "5_min", slotKey, {
       title: meeting.title,
       start_time: meeting.start_time,
       end_time: meeting.end_time,

@@ -239,6 +239,25 @@ export function formatTenMinReminder(meeting) {
 }
 
 /**
+ * Formats 5-minutes before meeting reminder.
+ * @param {Object} meeting
+ * @returns {{ text: string, reply_markup: Object|null }}
+ */
+export function formatFiveMinReminder(meeting) {
+  const title = escapeHtml(meeting.title);
+  const clockEmoji = getClockEmoji(meeting.start_time);
+  const timeRange = formatTimeRange(meeting.start_time, meeting.end_time);
+  const joinUrl = extractJoinLink(meeting);
+
+  const text = `🚨 <b>Meeting starts in 5 minutes!</b>\n\n📌 <b>${title}</b>\n\n${clockEmoji} <b>Time:</b>\n${timeRange}\n\nPlease join immediately.`;
+
+  return {
+    text,
+    reply_markup: buildJoinInlineKeyboard(joinUrl),
+  };
+}
+
+/**
  * Formats meeting cancellation notice.
  * @param {Object} meeting
  * @returns {string}
