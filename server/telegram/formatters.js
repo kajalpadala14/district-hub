@@ -128,8 +128,13 @@ export function extractJoinLink(meeting) {
     return meeting.location.trim();
   }
   if (meeting.description) {
+    // Check if description has "Link: https://..." or "Join: https://..." or "Venue: https://..."
+    const linkLabelMatch = meeting.description.match(/(?:Link|Join|URL|Meeting Link|Venue):\s*(https?:\/\/[^\s<]+)/i);
+    if (linkLabelMatch && isValidUrl(linkLabelMatch[1])) {
+      return linkLabelMatch[1].trim();
+    }
     const match = meeting.description.match(/https?:\/\/[^\s<]+/i);
-    if (match) return match[0];
+    if (match && isValidUrl(match[0])) return match[0].trim();
   }
   return null;
 }
