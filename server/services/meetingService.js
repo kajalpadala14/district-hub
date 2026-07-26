@@ -3,7 +3,11 @@ import { supabaseAdmin } from "../config/supabase.js";
 /**
  * Service to interact with Supabase database for planner_events/meetings
  * and handle reminder logging to prevent duplicates across server restarts.
+ * Includes in-memory fallback cache if telegram_reminder_logs table hasn't been created yet.
  */
+
+const inMemoryReminderLogs = new Set();
+let isTableMissingWarningLogged = false;
 
 /**
  * Fetches meetings scheduled for a specific date (YYYY-MM-DD).
@@ -22,7 +26,7 @@ export async function getTodayMeetings(dateStr) {
       .order("start_time", { ascending: true, nullsFirst: false });
 
     if (error) {
-      console.error(`[MeetingService] Error fetching meetings for date ${dateStr}:`, error);
+      console.error(`[MeetingService] Error fetching meetings for date ${dateStr}:`, error.message);
       return [];
     }
 
@@ -70,7 +74,7 @@ export async function getUpcomingMeetings(startDateStr) {
       .order("start_time", { ascending: true, nullsFirst: false });
 
     if (error) {
-      console.error("[MeetingService] Error fetching upcoming meetings:", error);
+      console.error("[MeetingService] Error fetching upcoming meetings:", error.message);
       return [];
     }
 
@@ -83,14 +87,20 @@ export async function getUpcomingMeetings(startDateStr) {
 
 /**
  * Checks if a specific reminder has already been logged in telegram_reminder_logs.
- * Prevents duplicate sends even after server restarts.
+ * Fallbacks to in-memory cache if database table is missing.
  *
  * @param {string} meetingId
- * @param {string} reminderType - 'digest_8am' | '1_hour' | '10_min' | 'cancelled' | 'updated'
- * @param {string} scheduledTime - Meeting date / time identifier
+ * @param {string} reminderType
+ * @param {string} scheduledTime
  * @returns {Promise<boolean>}
  */
 export async function hasReminderBeenSent(meetingId, reminderType, scheduledTime) {
+  const cacheKey = `${meetingId}_${reminderType}_${scheduledTime}`;
+
+  if (inMemoryReminderLogs.has(cacheKey)) {
+    return true;
+  }
+
   try {
     const { data, error } = await supabaseAdmin
       .from("telegram_reminder_logs")
@@ -101,19 +111,26 @@ export async function hasReminderBeenSent(meetingId, reminderType, scheduledTime
       .maybeSingle();
 
     if (error) {
-      console.error("[MeetingService] Error checking telegram_reminder_logs:", error);
-      return false;
+      if (error.code === "PGRST205") {
+        logTableMissingNoticeOnce();
+      }
+      return inMemoryReminderLogs.has(cacheKey);
     }
 
-    return !!data;
-  } catch (err) {
-    console.error("[MeetingService] Exception in hasReminderBeenSent:", err);
+    if (data) {
+      inMemoryReminderLogs.add(cacheKey);
+      return true;
+    }
+
     return false;
+  } catch {
+    return inMemoryReminderLogs.has(cacheKey);
   }
 }
 
 /**
  * Persists sent reminder details into telegram_reminder_logs table.
+ * Fallbacks to in-memory cache if table is missing.
  *
  * @param {string} meetingId
  * @param {string} reminderType
@@ -122,6 +139,9 @@ export async function hasReminderBeenSent(meetingId, reminderType, scheduledTime
  * @returns {Promise<boolean>}
  */
 export async function logReminderSent(meetingId, reminderType, scheduledTime, payload = {}) {
+  const cacheKey = `${meetingId}_${reminderType}_${scheduledTime}`;
+  inMemoryReminderLogs.add(cacheKey);
+
   try {
     const { error } = await supabaseAdmin
       .from("telegram_reminder_logs")
@@ -134,17 +154,19 @@ export async function logReminderSent(meetingId, reminderType, scheduledTime, pa
       });
 
     if (error) {
+      if (error.code === "PGRST205") {
+        logTableMissingNoticeOnce();
+        return true;
+      }
       if (error.code === "23505" || error.code === "P2002") {
         return true;
       }
-      console.error("[MeetingService] Error logging reminder to database:", error);
       return false;
     }
 
     return true;
-  } catch (err) {
-    console.error("[MeetingService] Exception in logReminderSent:", err);
-    return false;
+  } catch {
+    return true;
   }
 }
 
@@ -170,5 +192,14 @@ export async function getLastReminderLog(meetingId, reminderType) {
     return data;
   } catch {
     return null;
+  }
+}
+
+function logTableMissingNoticeOnce() {
+  if (!isTableMissingWarningLogged) {
+    console.warn(
+      "[MeetingService] Notice: Table 'public.telegram_reminder_logs' does not exist in Supabase database yet. Using in-memory tracking fallback. Run migration '20260726100000_telegram_reminder_system.sql' in Supabase SQL Editor to enable database persistence."
+    );
+    isTableMissingWarningLogged = true;
   }
 }
