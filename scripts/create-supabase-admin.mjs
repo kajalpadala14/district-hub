@@ -28,8 +28,24 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
+if (typeof globalThis.WebSocket === "undefined") {
+  class DummyWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+    readyState = 3;
+    addEventListener() {}
+    removeEventListener() {}
+    send() {}
+    close() {}
+  }
+  globalThis.WebSocket = DummyWebSocket;
+}
+
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
+  realtime: { disabled: true },
 });
 
 const normalizedUsername = username.trim().toLowerCase();
