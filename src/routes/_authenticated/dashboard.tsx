@@ -45,9 +45,9 @@ function GovernanceOverviewPage() {
   const { tasks: plannerEvents, refresh: refreshPlannerEvents } = usePlannerEvents();
   const { profiles, refresh: refreshProfiles } = useProfiles();
   const { departments, refresh: refreshDepartments } = useDepartments([
-    ...tasks.map((task) => task.department),
-    ...plannerEvents.map((event) => event.department),
-    ...profiles.map((profile) => profile.department),
+    ...(Array.isArray(tasks) ? tasks.map((task) => task?.department) : []),
+    ...(Array.isArray(plannerEvents) ? plannerEvents.map((event) => event?.department) : []),
+    ...(Array.isArray(profiles) ? profiles.map((profile) => profile?.department) : []),
   ]);
   const [meetingSort, setMeetingSort] = useState<MeetingSortMode>("next");
   const [meetingsCollapsed, setMeetingsCollapsed] = useState(false);

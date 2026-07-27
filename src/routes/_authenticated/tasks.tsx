@@ -117,8 +117,8 @@ function TasksManagementPage() {
   const { tasks, error: tasksError, refresh: refreshTasks } = useTasks();
   const { profiles } = useProfiles();
   const { departments: departmentOptions } = useDepartments([
-    ...tasks.map((task) => task.department),
-    ...profiles.map((profile) => profile.department),
+    ...(Array.isArray(tasks) ? tasks.map((task) => task?.department) : []),
+    ...(Array.isArray(profiles) ? profiles.map((profile) => profile?.department) : []),
   ]);
 
   const [query, setQuery] = useState("");

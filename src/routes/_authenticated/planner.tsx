@@ -88,8 +88,8 @@ function PlannerPage() {
   const { tasks, refresh: refreshTasks } = usePlannerEvents();
   const { profiles } = useProfiles();
   const { departments } = useDepartments([
-    ...tasks.map((task) => task.department),
-    ...profiles.map((profile) => profile.department),
+    ...(Array.isArray(tasks) ? tasks.map((task) => task?.department) : []),
+    ...(Array.isArray(profiles) ? profiles.map((profile) => profile?.department) : []),
   ]);
 
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date(), { weekStartsOn: 1 }));

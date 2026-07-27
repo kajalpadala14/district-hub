@@ -180,17 +180,20 @@ export function useDepartments(additionalDepartments: Array<string | null | unde
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const safeDepts = Array.isArray(additionalDepartments) ? additionalDepartments : [];
+
   const additionalKey = useMemo(() => {
+    if (!Array.isArray(safeDepts)) return "";
     return Array.from(
       new Set(
-        additionalDepartments
-          .map((dept) => dept?.trim())
+        safeDepts
+          .map((dept) => (typeof dept === "string" ? dept.trim() : null))
           .filter((dept): dept is string => Boolean(dept)),
       ),
     )
       .sort()
       .join("|");
-  }, [additionalDepartments]);
+  }, [safeDepts]);
 
   const load = useCallback(async () => {
     setLoading(true);
