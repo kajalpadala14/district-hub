@@ -144,6 +144,7 @@ async function handleDashboardUserCreate(request: Request) {
         full_name: fullName,
         job_title: null,
         department: "District Administration",
+        owner_user_id: data.user.id,
       },
       { onConflict: "id" },
     );
@@ -775,19 +776,30 @@ async function getPlannerTaskForUser(taskId: string, userId: string) {
 
 async function getTaskForUser(taskId: string, userId: string, canManageAllTasks: boolean) {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  let query = supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from("tasks")
-    .select("id,created_by,assignee_id")
+    .select("id,created_by,assignee_id,assigned_to")
     .eq("id", taskId)
     .maybeSingle();
 
-  if (!canManageAllTasks) {
-    query = query.or(`created_by.eq.${userId},assignee_id.eq.${userId}`);
-  }
-
-  const { data, error } = await query;
   if (error) throw error;
-  return data;
+  if (!data || canManageAllTasks) return data;
+  if (data.created_by === userId || data.assignee_id === userId || data.assigned_to === userId) return data;
+  if (await userOwnsProfile(data.assignee_id, userId)) return data;
+  return null;
+}
+
+async function userOwnsProfile(profileId: string | null, userId: string) {
+  if (!profileId) return false;
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const { data, error } = await supabaseAdmin
+    .from("profiles")
+    .select("id")
+    .eq("id", profileId)
+    .eq("owner_user_id", userId)
+    .maybeSingle();
+  if (error) throw error;
+  return !!data;
 }
 
 function normalizeTaskStatus(value: string | null | undefined) {

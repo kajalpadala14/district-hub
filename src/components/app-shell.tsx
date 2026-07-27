@@ -38,7 +38,7 @@ const nav = [
   { title: "Tasks", url: "/tasks", icon: ListChecks, adminOnly: false },
   { title: "Planner", url: "/planner", icon: CalendarDays, adminOnly: false },
   { title: "Analytics", url: "/analytics", icon: BarChart3, adminOnly: false },
-  { title: "Employees", url: "/employees", icon: Users, adminOnly: true },
+  { title: "Employees", url: "/employees", icon: Users, adminOnly: false },
   { title: "Users", url: "/users", icon: UserCog, adminOnly: true },
 ] as const;
 
