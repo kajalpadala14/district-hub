@@ -66,6 +66,7 @@ const adminProfile = {
   full_name: "Admin User",
   job_title: "Administrator",
   department: "District Administration",
+  owner_user_id: adminUser.id,
 };
 
 const { error: profileError } = await supabase.from("profiles").upsert(adminProfile, { onConflict: "id" });

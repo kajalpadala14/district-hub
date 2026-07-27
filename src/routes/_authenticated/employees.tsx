@@ -320,9 +320,10 @@ function DepartmentsDialog({
       return;
     }
 
+    const ownerUserId = sessionData.session.user.id;
     const request = editing
       ? supabase.from("departments").update({ name: clean }).eq("id", editing.id)
-      : supabase.from("departments").insert({ name: clean });
+      : supabase.from("departments").insert({ name: clean, owner_user_id: ownerUserId });
     const { error } = await request;
     if (error) {
       toast.error(error.message);
@@ -535,15 +536,6 @@ function EmployeeDialog({
       return;
     }
 
-    const payload = {
-      id: employee?.id ?? crypto.randomUUID(),
-      full_name: name,
-      email: form.email || emailForEmployee(name, username),
-      phone: phone || null,
-      job_title: username || null,
-      department: form.department || null,
-    };
-
     const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
     if (sessionError) {
       toast.error(sessionError.message);
@@ -553,6 +545,16 @@ function EmployeeDialog({
       toast.error("Please sign in before saving employees.");
       return;
     }
+
+    const payload = {
+      id: employee?.id ?? crypto.randomUUID(),
+      full_name: name,
+      email: form.email || emailForEmployee(name, username),
+      phone: phone || null,
+      job_title: username || null,
+      department: form.department || null,
+      owner_user_id: sessionData.session.user.id,
+    };
 
     if (!employee) {
       const { error } = await supabase.from("profiles").insert(payload);

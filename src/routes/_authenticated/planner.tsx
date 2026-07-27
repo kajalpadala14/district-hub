@@ -35,7 +35,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/useAuth";
-import { useDepartments, usePlannerEvents, useProfiles, type Task } from "@/hooks/useData";
+import { useDepartments, usePlannerEvents, type Task } from "@/hooks/useData";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import {
@@ -86,11 +86,7 @@ const eventColors = [
 function PlannerPage() {
   const { user } = useAuth();
   const { tasks, refresh: refreshTasks } = usePlannerEvents();
-  const { profiles } = useProfiles();
-  const { departments } = useDepartments([
-    ...tasks.map((task) => task.department),
-    ...profiles.map((profile) => profile.department),
-  ]);
+  const { departments } = useDepartments();
 
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date(), { weekStartsOn: 1 }));
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -1396,6 +1392,7 @@ async function savePlannerEventFallback(
         .from("planner_events")
         .update(plannerEventPayload(payload))
         .eq("id", id)
+        .eq("user_id", currentUserId)
         .select("id")
         .single()
     : await (supabase as any)

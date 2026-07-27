@@ -80,6 +80,7 @@ const profilePayload = {
   full_name: fullName,
   job_title: "Administrator",
   department: "District Administration",
+  owner_user_id: authUser.id,
 };
 
 const { error: profileError } = await supabase.from("profiles").upsert(profilePayload, { onConflict: "id" });
