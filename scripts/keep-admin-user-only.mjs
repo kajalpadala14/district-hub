@@ -15,6 +15,7 @@ if (existsSync(".env")) {
 const ADMIN_USERNAME = "admin";
 const ADMIN_EMAIL = "admin@district.gov.in";
 const ADMIN_PASSWORD = "Admin@123";
+const DASHBOARD_USER_DOMAINS = ["review-dashboard.example.com", "district.gov.in"];
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
 const missing = required.filter((key) => !process.env[key]);
@@ -80,7 +81,7 @@ const dashboardProfiles = (profiles ?? []).filter((profile) => {
   const email = profile.email.toLowerCase();
   const title = (profile.job_title ?? "").toLowerCase();
   return (
-    email.endsWith("@district.gov.in") ||
+    DASHBOARD_USER_DOMAINS.some((domain) => email.endsWith(`@${domain}`)) ||
     email === "local.user@gov.local" ||
     title.includes("administrator") ||
     title === "task manager"

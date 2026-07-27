@@ -12,7 +12,7 @@ if (existsSync(".env")) {
   }
 }
 
-const AUTH_USERNAME_DOMAIN = "district.gov.in";
+const AUTH_USERNAME_DOMAIN = "review-dashboard.example.com";
 const USERNAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,31}$/;
 
 const [username, password, fullName = "Admin User"] = process.argv.slice(2);

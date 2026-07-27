@@ -1,14 +1,16 @@
 import type { AppRole } from "@/hooks/useAuth";
 import type { Profile } from "@/hooks/useData";
 
-export const AUTH_USERNAME_DOMAIN = "district.gov.in";
+export const AUTH_USERNAME_DOMAIN = "review-dashboard.example.com";
+export const LEGACY_AUTH_USERNAME_DOMAINS = ["district.gov.in"];
+export const AUTH_USERNAME_DOMAINS = [AUTH_USERNAME_DOMAIN, ...LEGACY_AUTH_USERNAME_DOMAINS];
 
 export function isDashboardUserProfile(profile: Profile, role?: AppRole | null) {
   const email = profile.email.toLowerCase();
   const title = (profile.job_title ?? "").toLowerCase();
 
   return (
-    email.endsWith(`@${AUTH_USERNAME_DOMAIN}`) ||
+    AUTH_USERNAME_DOMAINS.some((domain) => email.endsWith(`@${domain}`)) ||
     email === "local.user@gov.local" ||
     role === "admin" ||
     role === "manager" ||
@@ -19,8 +21,9 @@ export function isDashboardUserProfile(profile: Profile, role?: AppRole | null) 
 
 export function usernameFromProfile(profile: Profile) {
   const email = profile.email.toLowerCase();
-  if (email.endsWith(`@${AUTH_USERNAME_DOMAIN}`)) {
-    return email.slice(0, -(`@${AUTH_USERNAME_DOMAIN}`.length));
+  const authDomain = AUTH_USERNAME_DOMAINS.find((domain) => email.endsWith(`@${domain}`));
+  if (authDomain) {
+    return email.slice(0, -(`@${authDomain}`.length));
   }
   return profile.email.split("@")[0] || "--";
 }
