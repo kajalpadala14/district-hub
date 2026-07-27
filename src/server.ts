@@ -2,6 +2,7 @@ import "./lib/error-capture";
 
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
+import { AUTH_USERNAME_DOMAIN, AUTH_USERNAME_DOMAINS } from "./lib/profileClassification";
 
 type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
@@ -60,6 +61,12 @@ export default {
       if (url.pathname === "/api/tasks") {
         return await handleTaskSave(request);
       }
+      if (url.pathname === "/api/auth/create-user") {
+        return await handleDashboardUserCreate(request);
+      }
+      if (url.pathname === "/api/auth/reset-password") {
+        return await handleDashboardPasswordReset(request);
+      }
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);
@@ -72,6 +79,174 @@ export default {
     }
   },
 };
+
+const USERNAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,31}$/;
+
+function normalizeUsername(value: string | null | undefined) {
+  return (value ?? "").trim().toLowerCase();
+}
+
+async function handleDashboardUserCreate(request: Request) {
+  if (request.method !== "POST") {
+    return new Response("Method not allowed", {
+      status: 405,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  try {
+    const body = (await request.json()) as {
+      fullName?: string | null;
+      username?: string | null;
+      password?: string | null;
+    };
+    const username = normalizeUsername(body.username);
+    const password = body.password ?? "";
+    const fullName = body.fullName?.trim() || username;
+
+    if (!USERNAME_PATTERN.test(username)) {
+      return new Response("Username single word hona chahiye. Sirf letters, numbers, _ ya - use karein.", {
+        status: 400,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+    if (password.length < 6) {
+      return new Response("Password kam se kam 6 characters ka hona chahiye.", {
+        status: 400,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+
+    const email = `${username}@${AUTH_USERNAME_DOMAIN}`;
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data, error } = await supabaseAdmin.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: { full_name: fullName, username },
+    });
+
+    if (error) {
+      const message = error.message || "User create failed";
+      const status = /already|registered|exists/i.test(message) ? 409 : 400;
+      return new Response(message, {
+        status,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+
+    if (!data.user) throw new Error("Supabase did not return a created user.");
+
+    const { error: profileError } = await supabaseAdmin.from("profiles").upsert(
+      {
+        id: data.user.id,
+        email,
+        full_name: fullName,
+        job_title: null,
+        department: "District Administration",
+      },
+      { onConflict: "id" },
+    );
+    if (profileError) throw profileError;
+
+    return Response.json({ username, email }, { status: 201 });
+  } catch (error) {
+    console.error("[Dashboard User Create] failed", error);
+    return new Response(error instanceof Error ? error.message : "User create failed", {
+      status: 500,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+}
+
+async function handleDashboardPasswordReset(request: Request) {
+  if (request.method !== "POST") {
+    return new Response("Method not allowed", {
+      status: 405,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  try {
+    const configuredResetCode = process.env.DASHBOARD_PASSWORD_RESET_CODE?.trim();
+    if (!configuredResetCode) {
+      return new Response("Password reset code is not configured.", {
+        status: 500,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+
+    const body = (await request.json()) as {
+      username?: string | null;
+      resetCode?: string | null;
+      password?: string | null;
+    };
+    const username = normalizeUsername(body.username);
+    const resetCode = body.resetCode?.trim() ?? "";
+    const password = body.password ?? "";
+
+    if (!USERNAME_PATTERN.test(username)) {
+      return new Response("Username single word hona chahiye. Sirf letters, numbers, _ ya - use karein.", {
+        status: 400,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+    if (resetCode !== configuredResetCode) {
+      return new Response("Reset code galat hai.", {
+        status: 401,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+    if (password.length < 6) {
+      return new Response("Password kam se kam 6 characters ka hona chahiye.", {
+        status: 400,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const authUser = await findAuthUserByUsername(username);
+    if (!authUser) {
+      return new Response("User nahi mila.", {
+        status: 404,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+
+    const { error } = await supabaseAdmin.auth.admin.updateUserById(authUser.id, {
+      password,
+      email_confirm: true,
+    });
+    if (error) throw error;
+
+    return Response.json({ ok: true }, { status: 200 });
+  } catch (error) {
+    console.error("[Dashboard Password Reset] failed", error);
+    return new Response(error instanceof Error ? error.message : "Password reset failed", {
+      status: 500,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+}
+
+async function findAuthUserByUsername(username: string) {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const candidateEmails = new Set(AUTH_USERNAME_DOMAINS.map((domain) => `${username}@${domain}`));
+
+  for (let page = 1; page <= 20; page += 1) {
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
+    if (error) throw error;
+
+    const match = data.users.find((user) => {
+      const email = user.email?.toLowerCase();
+      return !!email && candidateEmails.has(email);
+    });
+    if (match) return match;
+    if (data.users.length < 1000) return null;
+  }
+
+  return null;
+}
 
 async function handleTaskSave(request: Request) {
   if (!["POST", "PUT", "DELETE"].includes(request.method)) {
@@ -347,6 +522,18 @@ type PlannerTaskSaveRequest = {
   status?: string | null;
   priority?: string | null;
   calendar_sync_enabled?: boolean | null;
+  metadata?: PlannerEventMetadata | null;
+};
+
+type PlannerEventMetadata = {
+  telegram?: {
+    chat_id?: string | null;
+    recipient_type?: "user" | "group" | "channel" | null;
+    reminder_minutes_before?: number | string | Array<number | string> | null;
+    text?: string | null;
+  } | null;
+  reminder_minutes_before?: number | string | Array<number | string> | null;
+  [key: string]: unknown;
 };
 
 type TaskSaveRequest = PlannerTaskSaveRequest & {
@@ -487,6 +674,8 @@ function plannerTaskPayload(body: PlannerTaskSaveRequest) {
   const scheduledDate = normalizeDateKey(body.scheduled_date) ?? normalizeDateKey(body.due_date);
   if (!scheduledDate) throw new PlannerAuthError("Planner event date required", 400);
 
+  const metadata = normalizePlannerEventMetadata(body.metadata);
+
   return {
     title,
     description: body.description?.trim() || null,
@@ -500,7 +689,50 @@ function plannerTaskPayload(body: PlannerTaskSaveRequest) {
     is_all_day: !normalizeTime(body.due_time),
     status: normalizePlannerEventStatus(body.status, body.description),
     priority: normalizeTaskPriority(body.priority),
+    ...(metadata ? { metadata } : {}),
   };
+}
+
+function normalizePlannerEventMetadata(metadata: PlannerEventMetadata | null | undefined) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+
+  const cleanMetadata: PlannerEventMetadata = { ...metadata };
+  const telegram = metadata.telegram;
+  if (!telegram || typeof telegram !== "object" || Array.isArray(telegram)) {
+    delete cleanMetadata.telegram;
+    return Object.keys(cleanMetadata).length ? cleanMetadata : null;
+  }
+
+  const chatId = telegram.chat_id?.trim();
+  const reminderMinutes = normalizeReminderMinutes(
+    telegram.reminder_minutes_before ?? metadata.reminder_minutes_before,
+  );
+  if (!chatId || reminderMinutes.length === 0) {
+    delete cleanMetadata.telegram;
+    return Object.keys(cleanMetadata).length ? cleanMetadata : null;
+  }
+
+  cleanMetadata.telegram = {
+    chat_id: chatId,
+    recipient_type: ["user", "group", "channel"].includes(telegram.recipient_type ?? "")
+      ? telegram.recipient_type
+      : "user",
+    reminder_minutes_before: reminderMinutes,
+    ...(telegram.text?.trim() ? { text: telegram.text.trim() } : {}),
+  };
+
+  return cleanMetadata;
+}
+
+function normalizeReminderMinutes(value: PlannerEventMetadata["reminder_minutes_before"]) {
+  const values = Array.isArray(value) ? value : value === null || value === undefined ? [] : [value];
+  return Array.from(
+    new Set(
+      values
+        .map((item) => Number(item))
+        .filter((item) => Number.isInteger(item) && item >= 0 && item <= 7 * 24 * 60),
+    ),
+  ).sort((a, b) => b - a);
 }
 
 function taskPayload(body: TaskSaveRequest) {

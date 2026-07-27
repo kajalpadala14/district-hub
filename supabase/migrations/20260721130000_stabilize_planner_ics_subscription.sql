@@ -4,8 +4,8 @@ ALTER TABLE public.planner_events
   ADD COLUMN IF NOT EXISTS sequence integer NOT NULL DEFAULT 0;
 
 UPDATE public.planner_settings
-SET ics_token = COALESCE(NULLIF(ics_token, ''), NULLIF(subscription_token, ''), encode(gen_random_bytes(18), 'hex')),
-    subscription_token = COALESCE(NULLIF(ics_token, ''), NULLIF(subscription_token, ''), encode(gen_random_bytes(18), 'hex'))
+SET ics_token = COALESCE(NULLIF(ics_token, ''), NULLIF(subscription_token, ''), encode(extensions.gen_random_bytes(18), 'hex')),
+    subscription_token = COALESCE(NULLIF(ics_token, ''), NULLIF(subscription_token, ''), encode(extensions.gen_random_bytes(18), 'hex'))
 WHERE ics_token IS DISTINCT FROM subscription_token
    OR NULLIF(ics_token, '') IS NULL
    OR NULLIF(subscription_token, '') IS NULL;
@@ -20,7 +20,7 @@ LANGUAGE plpgsql
 SET search_path = public
 AS $$
 BEGIN
-  NEW.ics_token := COALESCE(NULLIF(NEW.ics_token, ''), NULLIF(NEW.subscription_token, ''), encode(gen_random_bytes(18), 'hex'));
+  NEW.ics_token := COALESCE(NULLIF(NEW.ics_token, ''), NULLIF(NEW.subscription_token, ''), encode(extensions.gen_random_bytes(18), 'hex'));
   NEW.subscription_token := COALESCE(NULLIF(NEW.subscription_token, ''), NEW.ics_token);
 
   IF TG_OP = 'INSERT' THEN
@@ -107,7 +107,7 @@ BEGIN
   v_existing_settings_found := FOUND;
 
   LOOP
-    v_token := encode(gen_random_bytes(32), 'hex');
+    v_token := encode(extensions.gen_random_bytes(32), 'hex');
     EXIT WHEN NOT EXISTS (
       SELECT 1
       FROM public.planner_settings ps

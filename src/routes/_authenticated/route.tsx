@@ -1,15 +1,16 @@
 import { createFileRoute, Outlet, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { CalendarDays, Lock, Moon, User, UserPlus } from "lucide-react";
+import { CalendarDays, KeyRound, Lock, Moon, User, UserPlus } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
-import { AUTH_USERNAME_DOMAIN } from "@/lib/profileClassification";
+import { AUTH_USERNAME_DOMAINS } from "@/lib/profileClassification";
 import { cn } from "@/lib/utils";
 
 const USERNAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,31}$/;
+type AuthMode = "login" | "create" | "reset";
 
 export const Route = createFileRoute("/_authenticated")({
   ssr: false,
@@ -38,10 +39,11 @@ function AuthenticatedLayout() {
 
 export function LoginScreen() {
   const navigate = useNavigate();
-  const [mode, setMode] = useState<"login" | "create">("login");
+  const [mode, setMode] = useState<AuthMode>("login");
   const [fullName, setFullName] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [resetCode, setResetCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -79,32 +81,45 @@ export function LoginScreen() {
       if (!USERNAME_PATTERN.test(normalizedUsername)) {
         throw new Error("Username single word hona chahiye. Sirf letters, numbers, _ ya - use karein.");
       }
-      const authEmail = emailForUsername(normalizedUsername);
 
-      if (mode === "create") {
-        const { data, error: signUpError } = await supabase.auth.signUp({
-          email: authEmail,
-          password,
-          options: {
-            data: {
-              full_name: fullName.trim() || normalizedUsername,
-              username: normalizedUsername,
-            },
-          },
+      if (mode === "reset") {
+        const response = await fetch("/api/auth/reset-password", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            username: normalizedUsername,
+            resetCode,
+            password,
+          }),
         });
-        if (signUpError) throw signUpError;
-        if (data.user && !data.session) {
-          setMessage("User created. Please confirm the email, then sign in.");
-        } else {
-          setMessage("User created successfully.");
+        if (!response.ok) {
+          throw new Error(await response.text());
         }
+        setMessage("Password reset successfully. Ab naye password se login karein.");
+        setMode("login");
+        setPassword("");
+        setResetCode("");
         return;
       }
 
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email: authEmail,
-        password,
-      });
+      if (mode === "create") {
+        const response = await fetch("/api/auth/create-user", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            fullName,
+            username: normalizedUsername,
+            password,
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        setMessage(`User created successfully. Login username: ${normalizedUsername}`);
+        return;
+      }
+
+      const { error: signInError } = await signInWithUsername(normalizedUsername, password);
       if (signInError) throw signInError;
     } catch (authError) {
       setError(authError instanceof Error ? authError.message : "Authentication failed");
@@ -160,10 +175,14 @@ export function LoginScreen() {
         <div className="w-full max-w-xl">
           <div>
             <h2 className="text-4xl font-extrabold tracking-tight text-slate-950 dark:text-white">
-              {mode === "login" ? "Welcome Back" : "Create User"}
+              {mode === "login" ? "Welcome Back" : mode === "create" ? "Create User" : "Reset Password"}
             </h2>
             <p className="mt-4 text-2xl text-slate-500">
-              {mode === "login" ? "Please sign in to continue." : "Create a new dashboard account."}
+              {mode === "login"
+                ? "Please sign in to continue."
+                : mode === "create"
+                  ? "Create a new dashboard account."
+                  : "Set a new dashboard password."}
             </p>
           </div>
 
@@ -224,6 +243,19 @@ export function LoginScreen() {
                 required
               />
             </AuthField>
+            {mode === "reset" && (
+              <AuthField label="Reset Code" icon={KeyRound}>
+                <Input
+                  type="password"
+                  autoComplete="one-time-code"
+                  placeholder="Reset code"
+                  value={resetCode}
+                  onChange={(event) => setResetCode(event.target.value)}
+                  className="h-19 border-0 bg-transparent pl-14 text-xl shadow-none focus-visible:ring-0"
+                  required
+                />
+              </AuthField>
+            )}
             <AuthField label="Password" icon={Lock}>
               <Input
                 type="password"
@@ -241,16 +273,27 @@ export function LoginScreen() {
               <button type="button" className="font-medium text-primary">
                 Need a hint?
               </button>
-              <button type="button" className="font-medium text-slate-500">
-                Forgot Password?
-              </button>
+              {mode !== "create" && (
+                <button
+                  type="button"
+                  className="font-medium text-slate-500"
+                  onClick={() => {
+                    setMode(mode === "reset" ? "login" : "reset");
+                    setError(null);
+                    setMessage(null);
+                    setPassword("");
+                  }}
+                >
+                  {mode === "reset" ? "Back to Login" : "Forgot Password?"}
+                </button>
+              )}
             </div>
 
             {error && <p className="rounded-xl bg-destructive/10 px-4 py-3 text-sm font-semibold text-destructive">{error}</p>}
             {message && <p className="rounded-xl bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{message}</p>}
 
             <Button type="submit" className="h-18 w-full rounded-xl bg-[#4833d4] text-xl font-extrabold shadow-2xl hover:bg-[#3d2bc0]" disabled={submitting}>
-              {submitting ? "Please wait..." : mode === "login" ? "Sign In" : (
+              {submitting ? "Please wait..." : mode === "login" ? "Sign In" : mode === "reset" ? "Reset Password" : (
                 <>
                   <UserPlus className="h-5 w-5" />
                   Create User
@@ -288,6 +331,21 @@ function normalizeUsername(value: string) {
   return value.trim().toLowerCase();
 }
 
-function emailForUsername(username: string) {
-  return `${username}@${AUTH_USERNAME_DOMAIN}`;
+function emailForUsername(username: string, domain: string) {
+  return `${username}@${domain}`;
+}
+
+async function signInWithUsername(username: string, password: string) {
+  let lastError: unknown = null;
+
+  for (const domain of AUTH_USERNAME_DOMAINS) {
+    const { error } = await supabase.auth.signInWithPassword({
+      email: emailForUsername(username, domain),
+      password,
+    });
+    if (!error) return { error: null };
+    lastError = error;
+  }
+
+  return { error: lastError instanceof Error ? lastError : new Error("Invalid login credentials") };
 }
