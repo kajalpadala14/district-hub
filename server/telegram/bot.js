@@ -1,7 +1,7 @@
 import { env } from "../config/env.js";
 import { getTodayMeetings } from "../services/meetingService.js";
 import { formatMorningDigest } from "./formatters.js";
-import { sendTelegramMessage } from "./telegramService.js";
+import { sendTelegramMessage, setActiveGroupChatId } from "./telegramService.js";
 
 let lastUpdateId = 0;
 let isPollingActive = false;
@@ -106,7 +106,10 @@ export async function processTelegramCommandUpdate(update) {
   let text = msg.text ? msg.text.trim() : "";
   const chatId = msg.chat?.id;
 
-  if (!text || !chatId) return;
+  if (!chatId) return;
+  setActiveGroupChatId(chatId);
+
+  if (!text) return;
 
   // Remove bot handle suffix if user types /today@district_hub_bot
   text = text.replace(/@\w+_bot/i, "");

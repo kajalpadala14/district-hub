@@ -1,12 +1,33 @@
 import { env } from "../config/env.js";
 
+let activeGroupChatId = null;
+
+/**
+ * Sets or updates the dynamically detected active Telegram Chat ID.
+ * @param {string|number} chatId
+ */
+export function setActiveGroupChatId(chatId) {
+  if (chatId) {
+    activeGroupChatId = String(chatId);
+    console.log(`[TelegramService] Active Telegram Chat ID set to: ${activeGroupChatId}`);
+  }
+}
+
+/**
+ * Gets the current target Telegram Chat ID (explicit -> detected active -> env test -> env group).
+ * @returns {string|null}
+ */
+export function getTargetChatId() {
+  return activeGroupChatId || env.testGroupChatId || env.telegramGroupChatId || null;
+}
+
 /**
  * Sends a message to Telegram group or target Chat ID with exponential backoff retries.
  * Logs specific categories: Digest Sent, Reminder Sent, Cancellation Sent, Update Sent, Retry Attempt, Telegram API Errors.
  *
  * @param {string} text - HTML formatted message body
  * @param {Object} [options]
- * @param {string} [options.chatId]
+ * @param {string|number} [options.chatId]
  * @param {string} [options.type] - Log label: 'digest' | 'reminder' | 'cancellation' | 'update' | 'test'
  * @param {Object} [options.reply_markup]
  * @param {boolean} [options.disable_web_page_preview=false]
@@ -14,8 +35,8 @@ import { env } from "../config/env.js";
  * @returns {Promise<boolean>}
  */
 export async function sendTelegramMessage(text, options = {}) {
-  const { telegramBotToken, telegramGroupChatId, testGroupChatId } = env;
-  const targetChatId = options.chatId || testGroupChatId || telegramGroupChatId;
+  const { telegramBotToken } = env;
+  const targetChatId = options.chatId || getTargetChatId();
   const messageType = options.type ?? "message";
 
   if (!telegramBotToken) {
@@ -24,7 +45,7 @@ export async function sendTelegramMessage(text, options = {}) {
   }
 
   if (!targetChatId) {
-    console.warn(`[TelegramService] TELEGRAM_GROUP_CHAT_ID is missing in .env. Skipping message delivery for '${messageType}'.`);
+    console.warn(`[TelegramService] Target Chat ID is missing. Please send /today or add bot to group to set target chat.`);
     return false;
   }
 
@@ -59,12 +80,14 @@ export async function sendTelegramMessage(text, options = {}) {
 
       if (response.ok && data.ok) {
         logSuccessCategory(messageType, targetChatId, data.result?.message_id);
+        // Cache successful chat ID as active target
+        setActiveGroupChatId(targetChatId);
         return true;
       }
 
       if (data.error_code === 400 && data.description?.includes("chat not found")) {
-        console.error(`[TelegramService] [Telegram API Errors] Chat ID ${targetChatId} not found. Please ensure @district_hub_bot is added to your Telegram group or update TELEGRAM_GROUP_CHAT_ID in .env.`);
-        return false; // Do not retry invalid chat ID
+        console.error(`[TelegramService] [Telegram API Errors] Chat ID ${targetChatId} not found. Please ensure bot is added to your Telegram group or send /today in group.`);
+        return false;
       }
 
       console.error(`[TelegramService] [Telegram API Errors] Error on attempt ${attempt}/${maxRetries}:`, data);
