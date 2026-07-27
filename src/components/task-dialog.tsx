@@ -88,12 +88,7 @@ export function TaskDialog({
   });
 
   const employeeOptions = useMemo(() => mergeEmployees(employees), [employees]);
-  const { departments } = useDepartments();
-  const departmentOptions = useMemo(() => {
-    const names = new Set(departments.map((department) => department.name));
-    if (form.department && form.department !== "None (General)") names.add(form.department);
-    return Array.from(names).sort((a, b) => a.localeCompare(b));
-  }, [departments, form.department]);
+  const { departments } = useDepartments(employeeOptions.map((employee) => employee.department));
 
   useEffect(() => {
     if (task) {
@@ -282,10 +277,9 @@ export function TaskDialog({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="None (General)">None (General)</SelectItem>
-                    {departmentOptions.map((department) => (
-                      <SelectItem key={department} value={department}>
-                        {department}
+                    {departments.map((department) => (
+                      <SelectItem key={department.id} value={department.name}>
+                        {department.name}
                       </SelectItem>
                     ))}
                   </SelectContent>

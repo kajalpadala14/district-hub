@@ -116,7 +116,10 @@ function TasksManagementPage() {
   const { user } = useAuth();
   const { tasks, error: tasksError, refresh: refreshTasks } = useTasks();
   const { profiles } = useProfiles();
-  const { departments: departmentOptions } = useDepartments();
+  const { departments: departmentOptions } = useDepartments([
+    ...tasks.map((task) => task.department),
+    ...profiles.map((profile) => profile.department),
+  ]);
 
   const [query, setQuery] = useState("");
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
