@@ -35,7 +35,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/useAuth";
-import { useDepartments, usePlannerEvents, type Task } from "@/hooks/useData";
+import { useDepartments, usePlannerEvents, useProfiles, type Task } from "@/hooks/useData";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import {
@@ -86,7 +86,11 @@ const eventColors = [
 function PlannerPage() {
   const { user } = useAuth();
   const { tasks, refresh: refreshTasks } = usePlannerEvents();
-  const { departments } = useDepartments();
+  const { profiles } = useProfiles();
+  const { departments } = useDepartments([
+    ...(Array.isArray(tasks) ? tasks.map((task) => task?.department) : []),
+    ...(Array.isArray(profiles) ? profiles.map((profile) => profile?.department) : []),
+  ]);
 
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date(), { weekStartsOn: 1 }));
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -1322,7 +1326,6 @@ async function savePlannerTask(
     department: string | null;
     status: Task["status"];
     priority: Task["priority"];
-    metadata?: PlannerEventMetadata | null;
   },
   accessToken: string,
   currentUserId: string,
@@ -1383,7 +1386,6 @@ async function savePlannerEventFallback(
     department: string | null;
     status: Task["status"];
     priority: Task["priority"];
-    metadata?: PlannerEventMetadata | null;
   },
   currentUserId: string,
 ) {
@@ -1392,7 +1394,6 @@ async function savePlannerEventFallback(
         .from("planner_events")
         .update(plannerEventPayload(payload))
         .eq("id", id)
-        .eq("user_id", currentUserId)
         .select("id")
         .single()
     : await (supabase as any)
@@ -1412,7 +1413,6 @@ function plannerEventPayload(payload: {
   department: string | null;
   status: Task["status"];
   priority: Task["priority"];
-  metadata?: PlannerEventMetadata | null;
 }) {
   const startTime = payload.due_time ? toTimeInput(payload.due_time) : null;
   const duration = extractDurationMinutes(payload.description) ?? 30;
@@ -1427,7 +1427,6 @@ function plannerEventPayload(payload: {
     status: plannerEventStatus(payload.status, payload.description),
     priority: payload.priority,
     color: extractDescriptionField(payload.description, "Color"),
-    ...(payload.metadata ? { metadata: payload.metadata } : {}),
   };
   console.info("[Planner Booking Debug] planner_events payload", {
     selectedSlot: payload.due_time,
@@ -1436,17 +1435,6 @@ function plannerEventPayload(payload: {
   });
   return eventPayload;
 }
-
-type PlannerEventMetadata = {
-  telegram?: {
-    chat_id?: string | null;
-    recipient_type?: "user" | "group" | "channel" | null;
-    reminder_minutes_before?: number | string | Array<number | string> | null;
-    text?: string | null;
-  } | null;
-  reminder_minutes_before?: number | string | Array<number | string> | null;
-  [key: string]: unknown;
-};
 
 function plannerEventStatus(status: Task["status"], description: string | null) {
   const formStatus = extractDescriptionField(description, "Status")?.toLowerCase();

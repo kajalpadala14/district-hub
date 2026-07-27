@@ -30,11 +30,9 @@ import {
   usePlannerEvents,
   useProfiles,
   useTasks,
-  useUserRoles,
   type Task,
 } from "@/hooks/useData";
 import { supabase } from "@/integrations/supabase/client";
-import { isDashboardUserProfile } from "@/lib/profileClassification";
 import { dateKeyForTask, isPlannerMeetingTask, isTaskItem } from "@/lib/taskClassification";
 import { cn } from "@/lib/utils";
 
@@ -46,8 +44,11 @@ function GovernanceOverviewPage() {
   const { tasks, refresh: refreshTasks } = useTasks();
   const { tasks: plannerEvents, refresh: refreshPlannerEvents } = usePlannerEvents();
   const { profiles, refresh: refreshProfiles } = useProfiles();
-  const roles = useUserRoles();
-  const { departments, refresh: refreshDepartments } = useDepartments();
+  const { departments, refresh: refreshDepartments } = useDepartments([
+    ...(Array.isArray(tasks) ? tasks.map((task) => task?.department) : []),
+    ...(Array.isArray(plannerEvents) ? plannerEvents.map((event) => event?.department) : []),
+    ...(Array.isArray(profiles) ? profiles.map((profile) => profile?.department) : []),
+  ]);
   const [meetingSort, setMeetingSort] = useState<MeetingSortMode>("next");
   const [meetingsCollapsed, setMeetingsCollapsed] = useState(false);
   const [deletingMeetingId, setDeletingMeetingId] = useState<string | null>(null);
@@ -63,11 +64,6 @@ function GovernanceOverviewPage() {
   const weekEnd = useMemo(() => endOfWeek(now ?? new Date(0), { weekStartsOn: 1 }), [now]);
 
   const taskItems = tasks.filter(isTaskItem);
-  const roleByUserId = useMemo(() => new Map(roles.map((role) => [role.user_id, role.role])), [roles]);
-  const employeeProfiles = useMemo(
-    () => profiles.filter((profile) => !isDashboardUserProfile(profile, roleByUserId.get(profile.id))),
-    [profiles, roleByUserId],
-  );
   const totalTasks = taskItems.length;
   const completedTasks = taskItems.filter((task) => task.status === "done").length;
   const overdueTasks = taskItems.filter((task) => overdueTask(task, todayKey)).length;
@@ -292,7 +288,7 @@ function GovernanceOverviewPage() {
               <h3 className="text-sm font-semibold">Quick Stats</h3>
               <div className="mt-4 space-y-4">
                 <QuickStat label="Departments" value={departments.length} />
-                <QuickStat label="Employees" value={employeeProfiles.length} />
+                <QuickStat label="Employees" value={profiles.length} />
                 <QuickStat
                   label="Scheduled Items"
                   value={scheduledTasks.length}
