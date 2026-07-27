@@ -44,22 +44,28 @@ export function useTasks() {
     }
   }, []);
 
+  const loadRef = useRef(load);
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
+
   useEffect(() => {
     let mounted = true;
-    void load();
+    void loadRef.current();
 
+    const channelId = `tasks-changes-${Math.random().toString(36).substring(2, 9)}`;
     const channel = supabase
-      .channel("tasks-changes")
+      .channel(channelId)
       .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, () => {
-        if (mounted) void load();
+        if (mounted) void loadRef.current();
       })
       .subscribe();
 
     return () => {
       mounted = false;
-      supabase.removeChannel(channel);
+      void supabase.removeChannel(channel);
     };
-  }, [load]);
+  }, []);
 
   return { tasks, loading, error, refresh: load };
 }
@@ -113,22 +119,28 @@ export function usePlannerEvents() {
     }
   }, []);
 
+  const loadRef = useRef(load);
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
+
   useEffect(() => {
     let mounted = true;
-    void load();
+    void loadRef.current();
 
+    const channelId = `planner-events-${Math.random().toString(36).substring(2, 9)}`;
     const channel = supabase
-      .channel("planner-events-changes")
+      .channel(channelId)
       .on("postgres_changes", { event: "*", schema: "public", table: "planner_events" }, () => {
-        if (mounted) void load();
+        if (mounted) void loadRef.current();
       })
       .subscribe();
 
     return () => {
       mounted = false;
-      supabase.removeChannel(channel);
+      void supabase.removeChannel(channel);
     };
-  }, [load]);
+  }, []);
 
   return { tasks, loading, error, refresh: load };
 }
@@ -155,22 +167,28 @@ export function useProfiles() {
     }
   }, []);
 
+  const loadRef = useRef(load);
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
+
   useEffect(() => {
     let mounted = true;
-    void load();
+    void loadRef.current();
 
+    const channelId = `profiles-changes-${Math.random().toString(36).substring(2, 9)}`;
     const channel = supabase
-      .channel("profiles-changes")
+      .channel(channelId)
       .on("postgres_changes", { event: "*", schema: "public", table: "profiles" }, () => {
-        if (mounted) void load();
+        if (mounted) void loadRef.current();
       })
       .subscribe();
 
     return () => {
       mounted = false;
-      supabase.removeChannel(channel);
+      void supabase.removeChannel(channel);
     };
-  }, [load]);
+  }, []);
 
   return { profiles, loading, error, refresh: load };
 }
@@ -231,22 +249,28 @@ export function useDepartments(additionalDepartments: Array<string | null | unde
     }
   }, [additionalKey]);
 
+  const loadRef = useRef(load);
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
+
   useEffect(() => {
     let mounted = true;
-    void load();
+    void loadRef.current();
 
+    const channelId = `departments-changes-${Math.random().toString(36).substring(2, 9)}`;
     const channel = supabase
-      .channel("departments-changes")
+      .channel(channelId)
       .on("postgres_changes", { event: "*", schema: "public", table: "departments" }, () => {
-        if (mounted) void load();
+        if (mounted) void loadRef.current();
       })
       .subscribe();
 
     return () => {
       mounted = false;
-      supabase.removeChannel(channel);
+      void supabase.removeChannel(channel);
     };
-  }, [load]);
+  }, []);
 
   return { departments, loading, error, refresh: load };
 }
