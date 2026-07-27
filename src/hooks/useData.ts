@@ -78,7 +78,7 @@ export function usePlannerEvents() {
         return;
       }
 
-      const { data, error: queryError } = await supabase
+      const { data, error: queryError } = await (supabase as any)
         .from("planner_events")
         .select("*")
         .eq("user_id", sessionData.session.user.id)
