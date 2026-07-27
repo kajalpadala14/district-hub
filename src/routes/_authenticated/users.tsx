@@ -24,10 +24,11 @@ export const Route = createFileRoute("/_authenticated/users")({
 
 function UsersPage() {
   const { profiles, refresh } = useProfiles();
-  const roles = useUserRoles();
+  const { roles } = useUserRoles();
   const [query, setQuery] = useState("");
 
-  const roleByUserId = useMemo(() => new Map(roles.map((role) => [role.user_id, role.role])), [roles]);
+  const safeRoles = Array.isArray(roles) ? roles : [];
+  const roleByUserId = useMemo(() => new Map(safeRoles.map((role) => [role.user_id, role.role])), [safeRoles]);
   const users = useMemo(() => {
     const byEmail = new Map<string, Profile>();
     for (const profile of profiles) {

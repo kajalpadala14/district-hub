@@ -41,7 +41,7 @@ export const Route = createFileRoute("/_authenticated/employees")({
 
 function EmployeesPage() {
   const { profiles, refresh } = useProfiles();
-  const roles = useUserRoles();
+  const { roles } = useUserRoles();
   const { tasks } = useTasks();
   const { departments, refresh: refreshDepartments } = useDepartments();
   const [query, setQuery] = useState("");
@@ -49,7 +49,8 @@ function EmployeesPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [departmentsOpen, setDepartmentsOpen] = useState(false);
   const [editing, setEditing] = useState<Profile | null>(null);
-  const roleByUserId = useMemo(() => new Map(roles.map((role) => [role.user_id, role.role])), [roles]);
+  const safeRoles = Array.isArray(roles) ? roles : [];
+  const roleByUserId = useMemo(() => new Map(safeRoles.map((role) => [role.user_id, role.role])), [safeRoles]);
   const employeeProfiles = useMemo(
     () => profiles.filter((profile) => !isDashboardUserProfile(profile, roleByUserId.get(profile.id))),
     [profiles, roleByUserId],
