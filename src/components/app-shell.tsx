@@ -34,20 +34,21 @@ import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 
 const nav = [
-  { title: "Overview", url: "/dashboard", icon: LayoutDashboard },
-  { title: "Tasks", url: "/tasks", icon: ListChecks },
-  { title: "Planner", url: "/planner", icon: CalendarDays },
-  { title: "Analytics", url: "/analytics", icon: BarChart3 },
-  { title: "Employees", url: "/employees", icon: Users },
-  { title: "Users", url: "/users", icon: UserCog },
+  { title: "Overview", url: "/dashboard", icon: LayoutDashboard, adminOnly: false },
+  { title: "Tasks", url: "/tasks", icon: ListChecks, adminOnly: false },
+  { title: "Planner", url: "/planner", icon: CalendarDays, adminOnly: false },
+  { title: "Analytics", url: "/analytics", icon: BarChart3, adminOnly: false },
+  { title: "Employees", url: "/employees", icon: Users, adminOnly: true },
+  { title: "Users", url: "/users", icon: UserCog, adminOnly: true },
 ] as const;
 
 function AppSidebar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [darkMode, setDarkMode] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-  const { user } = useAuth();
+  const { user, role } = useAuth();
   const displayUser = user?.user_metadata?.full_name || user?.user_metadata?.username || user?.email?.split("@")[0] || "User";
+  const visibleNav = nav.filter((item) => !item.adminOnly || role === "admin");
 
   useEffect(() => {
     const stored = window.localStorage.getItem("governance-theme");
@@ -87,7 +88,7 @@ function AppSidebar() {
           <SidebarGroupLabel>Workspace</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {nav.map((item) => {
+              {visibleNav.map((item) => {
                 const active = pathname === item.url || pathname.startsWith(item.url + "/");
                 return (
                   <SidebarMenuItem key={item.url}>
@@ -168,7 +169,9 @@ function clearSupabaseAuthStorage() {
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const current = nav.find((n) => pathname === n.url || pathname.startsWith(n.url + "/"));
+  const { role } = useAuth();
+  const visibleNav = nav.filter((item) => !item.adminOnly || role === "admin");
+  const current = visibleNav.find((n) => pathname === n.url || pathname.startsWith(n.url + "/"));
   return (
     <SidebarProvider>
       <div className="flex min-h-dvh w-full overflow-x-hidden bg-background">

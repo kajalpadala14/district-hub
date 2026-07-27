@@ -32,6 +32,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 import { useDepartments, useProfiles, useTasks, useUserRoles, type Department, type Profile } from "@/hooks/useData";
 import { isDashboardUserProfile, usernameFromProfile } from "@/lib/profileClassification";
 
@@ -40,6 +41,7 @@ export const Route = createFileRoute("/_authenticated/employees")({
 });
 
 function EmployeesPage() {
+  const { role, loading: authLoading } = useAuth();
   const { profiles, refresh } = useProfiles();
   const roles = useUserRoles();
   const { tasks } = useTasks();
@@ -100,6 +102,14 @@ function EmployeesPage() {
       })
       .sort((a, b) => (a.full_name || a.email).localeCompare(b.full_name || b.email));
   }, [employeeProfiles, query, departmentFilter]);
+
+  if (authLoading) {
+    return <p className="text-sm text-muted-foreground">Loading...</p>;
+  }
+
+  if (role !== "admin") {
+    return <AdminOnlyMessage />;
+  }
 
   const openAdd = () => {
     setEditing(null);
@@ -265,6 +275,17 @@ function EmployeesPage() {
           await refresh();
         }}
       />
+    </div>
+  );
+}
+
+function AdminOnlyMessage() {
+  return (
+    <div className="rounded-xl border bg-card p-6 shadow-sm">
+      <h2 className="text-xl font-semibold tracking-tight">Admin access required</h2>
+      <p className="mt-2 text-sm text-muted-foreground">
+        This page is only available to administrators.
+      </p>
     </div>
   );
 }

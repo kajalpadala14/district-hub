@@ -1077,7 +1077,7 @@ async function userCanViewAllTasks(userId: string) {
     .from("user_roles")
     .select("role")
     .eq("user_id", userId)
-    .in("role", ["admin", "manager"]);
+    .eq("role", "admin");
   if (error) throw error;
   return (data ?? []).length > 0;
 }
@@ -1104,7 +1104,7 @@ async function explainEmptyPlannerCalendar(userId: string) {
     "No planner calendar events were exported.",
     "Reason: the subscription token is valid, but no planner_events rows in this planner scope have a usable date.",
     "Planner table: public.planner_events. Token table: public.planner_settings.",
-    `Calendar scope: ${canViewAllPlannerTasks ? "admin/manager, all planner events" : "planner events owned by the token owner"}.`,
+    `Calendar scope: ${canViewAllPlannerTasks ? "admin, all planner events" : "planner events owned by the token owner"}.`,
     `Planner events in scope: ${rows.length}.`,
     `Planner events with date in scope: ${coreDatedCount ?? 0}.`,
     `Planner events with usable planner date (${plannerDateFields.join(", ")}): ${datedCount}.`,

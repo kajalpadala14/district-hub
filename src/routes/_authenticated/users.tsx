@@ -15,6 +15,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useAuth } from "@/hooks/useAuth";
 import { useProfiles, useUserRoles, type Profile } from "@/hooks/useData";
 import { isDashboardUserProfile, usernameFromProfile } from "@/lib/profileClassification";
 
@@ -23,6 +24,7 @@ export const Route = createFileRoute("/_authenticated/users")({
 });
 
 function UsersPage() {
+  const { role, loading: authLoading } = useAuth();
   const { profiles, refresh } = useProfiles();
   const roles = useUserRoles();
   const [query, setQuery] = useState("");
@@ -53,12 +55,20 @@ function UsersPage() {
     );
   }, [query, roleByUserId, users]);
 
+  if (authLoading) {
+    return <p className="text-sm text-muted-foreground">Loading...</p>;
+  }
+
+  if (role !== "admin") {
+    return <AdminOnlyMessage />;
+  }
+
   return (
     <div className="space-y-6">
       <section className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 className="text-3xl font-semibold tracking-tight">Users</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Manage dashboard login users separately from employees</p>
+          <p className="mt-1 text-sm text-muted-foreground">Manage dashboard login users and access status</p>
         </div>
         <Button
           variant="outline"
@@ -117,7 +127,7 @@ function UsersPage() {
                       <TableCell className="text-sm">{usernameFromProfile(profile)}</TableCell>
                       <TableCell>
                         <Badge variant="secondary" className="capitalize">
-                          {role ?? profile.job_title ?? "user"}
+                          {userRoleLabel(role)}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">{profile.department || "--"}</TableCell>
@@ -137,4 +147,21 @@ function UsersPage() {
       </Card>
     </div>
   );
+}
+
+function AdminOnlyMessage() {
+  return (
+    <div className="rounded-xl border bg-card p-6 shadow-sm">
+      <h2 className="text-xl font-semibold tracking-tight">Admin access required</h2>
+      <p className="mt-2 text-sm text-muted-foreground">
+        This page is only available to administrators.
+      </p>
+    </div>
+  );
+}
+
+function userRoleLabel(role: string | undefined) {
+  if (role === "admin") return "Admin";
+  if (role === "manager") return "Manager";
+  return "User";
 }
