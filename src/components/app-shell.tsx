@@ -47,7 +47,8 @@ function AppSidebar() {
   const [darkMode, setDarkMode] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const { user, role } = useAuth();
-  const displayUser = user?.user_metadata?.full_name || user?.user_metadata?.username || user?.email?.split("@")[0] || "User";
+  const rawDisplayUser = user?.user_metadata?.full_name || user?.user_metadata?.username || user?.email?.split("@")[0] || "User";
+  const displayUser = rawDisplayUser === "Collector" ? "District Collector" : rawDisplayUser;
   const visibleNav = nav.filter((item) => !item.adminOnly || role === "admin");
 
   useEffect(() => {
@@ -77,7 +78,7 @@ function AppSidebar() {
         <div className="flex items-center gap-2.5 px-2 py-2">
           <img src="/logo.png" alt="Dantewada District Logo" className="h-9 w-9 object-contain shrink-0" />
           <div className="flex flex-col leading-tight group-data-[collapsible=icon]:hidden">
-            <span className="text-sm font-semibold">District Admin</span>
+            <span className="text-sm font-semibold">District Collector</span>
             <span className="text-xs text-muted-foreground">Governance Portal</span>
           </div>
         </div>
