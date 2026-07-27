@@ -4,8 +4,15 @@ import { getSchedulerHealth, triggerMorningDigestNow, triggerReminderJobNow } fr
 import { countPendingMeetingsToday } from "../services/meetingService.js";
 import { sendTelegramMessage } from "../telegram/telegramService.js";
 import { getTodayDateString } from "../jobs/morningDigest.js";
+import { processTelegramCommandUpdate } from "../telegram/bot.js";
 
 export const telegramRouter = Router();
+
+function asyncHandler(fn) {
+  return (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+}
 
 /**
  * GET /telegram/health
@@ -22,6 +29,20 @@ telegramRouter.get(
       ...health,
       pendingMeetingsToday,
     });
+  })
+);
+
+/**
+ * POST /telegram/webhook
+ * Handles incoming Telegram updates & commands (/today, /date, /help).
+ */
+telegramRouter.post(
+  "/webhook",
+  asyncHandler(async (req, res) => {
+    res.status(200).send("OK");
+    if (req.body) {
+      await processTelegramCommandUpdate(req.body);
+    }
   })
 );
 
@@ -98,9 +119,3 @@ telegramRouter.post(
     res.json({ ok: true, message: "Telegram message sent successfully" });
   })
 );
-
-function asyncHandler(fn) {
-  return (req, res, next) => {
-    Promise.resolve(fn(req, res, next)).catch(next);
-  };
-}
