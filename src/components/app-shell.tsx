@@ -48,8 +48,9 @@ function AppSidebar() {
   const [loggingOut, setLoggingOut] = useState(false);
   const { user, role } = useAuth();
   const rawDisplayUser = user?.user_metadata?.full_name || user?.user_metadata?.username || user?.email?.split("@")[0] || "User";
-  const displayUser = role === "admin" ? "District Admin" : rawDisplayUser === "Collector" ? "District Collector" : rawDisplayUser;
-  const sidebarTitle = role === "admin" ? "District Admin" : "District Collector";
+  const isCollectorUser = rawDisplayUser.trim().toLowerCase() === "collector";
+  const displayUser = isCollectorUser ? "District Collector" : role === "admin" ? "District Admin" : rawDisplayUser;
+  const sidebarTitle = isCollectorUser ? "District Collector" : role === "admin" ? "District Admin" : "District Collector";
   const visibleNav = nav.filter((item) => !item.adminOnly || role === "admin");
 
   useEffect(() => {
