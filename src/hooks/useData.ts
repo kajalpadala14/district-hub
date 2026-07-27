@@ -25,10 +25,10 @@ export function useTasks() {
         return;
       }
 
-      const { data, error: queryError } = await supabase
+      const { data, error: queryError } = await (supabase as any)
         .from("tasks")
         .select("*")
-        .eq("user_id", sessionData.session.user.id)
+        .or(`user_id.eq.${sessionData.session.user.id},user_id.is.null`)
         .order("created_at", { ascending: false });
       if (queryError) throw queryError;
       setTasks(data ?? []);
@@ -81,7 +81,7 @@ export function usePlannerEvents() {
       const { data, error: queryError } = await (supabase as any)
         .from("planner_events")
         .select("*")
-        .eq("user_id", sessionData.session.user.id)
+        .or(`user_id.eq.${sessionData.session.user.id},user_id.is.null`)
         .order("date", { ascending: true })
         .order("start_time", { ascending: true, nullsFirst: false });
       if (queryError) throw queryError;
