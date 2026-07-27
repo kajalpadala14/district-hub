@@ -73,12 +73,10 @@ function AppSidebar() {
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader className="border-b border-sidebar-border">
-        <div className="flex items-center gap-2 px-2 py-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <Shield className="h-4 w-4" aria-hidden="true" />
-          </div>
+        <div className="flex items-center gap-2.5 px-2 py-2">
+          <img src="/logo.png" alt="Dantewada District Logo" className="h-8 w-8 object-contain rounded-md" />
           <div className="flex flex-col leading-tight group-data-[collapsible=icon]:hidden">
-            <span className="text-sm font-semibold">District Admin</span>
+            <span className="text-sm font-semibold">Dantewada District</span>
             <span className="text-xs text-muted-foreground">Governance Portal</span>
           </div>
         </div>

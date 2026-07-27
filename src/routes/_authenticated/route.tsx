@@ -118,10 +118,8 @@ export function LoginScreen() {
       <section className="relative flex min-h-[42dvh] flex-col items-center justify-center overflow-hidden bg-[#392896] px-6 py-10 text-center text-white lg:min-h-dvh">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.14),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.08),transparent)]" />
         <div className="relative flex max-w-md flex-col items-center">
-          <div className="flex h-18 w-18 items-center justify-center rounded-xl bg-white/18 text-3xl font-extrabold shadow-2xl ring-1 ring-white/20">
-            DA
-          </div>
-          <p className="mt-5 text-xl font-semibold uppercase tracking-wide text-white/90">District Administration</p>
+          <img src="/logo.png" alt="Dantewada District Logo" className="h-24 w-24 object-contain filter drop-shadow-xl" />
+          <p className="mt-5 text-xl font-semibold uppercase tracking-wide text-white/90">Dantewada District Administration</p>
           <h1 className="mt-16 text-6xl font-extrabold leading-[0.96] tracking-tight sm:text-7xl">
             Task
             <br />
