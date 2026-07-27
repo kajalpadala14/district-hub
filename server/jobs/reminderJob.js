@@ -81,18 +81,18 @@ async function handleOneHourReminder(meeting) {
 
   if (alreadySent) return;
 
-  // Log immediately to prevent duplicate sends on subsequent minute runs
-  await logReminderSent(meeting.id, "1_hour", slotKey, {
-    title: meeting.title,
-    start_time: meeting.start_time,
-    end_time: meeting.end_time,
-    date: meeting.date,
-  });
-
-  console.log(`[ReminderJob] [Reminder Sent] Triggering 1-hour reminder for meeting "${meeting.title}" (${meeting.id})`);
-
   const { text, reply_markup } = formatOneHourReminder(meeting);
-  await sendTelegramMessage(text, { type: "reminder", reply_markup });
+  const sent = await sendTelegramMessage(text, { type: "reminder", reply_markup });
+
+  if (sent) {
+    await logReminderSent(meeting.id, "1_hour", slotKey, {
+      title: meeting.title,
+      start_time: meeting.start_time,
+      end_time: meeting.end_time,
+      date: meeting.date,
+    });
+    console.log(`[ReminderJob] [Reminder Sent] 1-hour reminder delivered for "${meeting.title}" (${meeting.id})`);
+  }
 }
 
 async function handleTenMinReminder(meeting) {
@@ -101,18 +101,18 @@ async function handleTenMinReminder(meeting) {
 
   if (alreadySent) return;
 
-  // Log immediately to prevent duplicate sends on subsequent minute runs
-  await logReminderSent(meeting.id, "10_min", slotKey, {
-    title: meeting.title,
-    start_time: meeting.start_time,
-    end_time: meeting.end_time,
-    date: meeting.date,
-  });
-
-  console.log(`[ReminderJob] [Reminder Sent] Triggering 10-minute reminder for meeting "${meeting.title}" (${meeting.id})`);
-
   const { text, reply_markup } = formatTenMinReminder(meeting);
-  await sendTelegramMessage(text, { type: "reminder", reply_markup });
+  const sent = await sendTelegramMessage(text, { type: "reminder", reply_markup });
+
+  if (sent) {
+    await logReminderSent(meeting.id, "10_min", slotKey, {
+      title: meeting.title,
+      start_time: meeting.start_time,
+      end_time: meeting.end_time,
+      date: meeting.date,
+    });
+    console.log(`[ReminderJob] [Reminder Sent] 10-minute reminder delivered for "${meeting.title}" (${meeting.id})`);
+  }
 }
 
 async function handleFiveMinReminder(meeting) {
@@ -121,18 +121,18 @@ async function handleFiveMinReminder(meeting) {
 
   if (alreadySent) return;
 
-  // Log immediately to prevent duplicate sends on subsequent minute runs
-  await logReminderSent(meeting.id, "5_min", slotKey, {
-    title: meeting.title,
-    start_time: meeting.start_time,
-    end_time: meeting.end_time,
-    date: meeting.date,
-  });
-
-  console.log(`[ReminderJob] [Reminder Sent] Triggering 5-minute reminder for meeting "${meeting.title}" (${meeting.id})`);
-
   const { text, reply_markup } = formatFiveMinReminder(meeting);
-  await sendTelegramMessage(text, { type: "reminder", reply_markup });
+  const sent = await sendTelegramMessage(text, { type: "reminder", reply_markup });
+
+  if (sent) {
+    await logReminderSent(meeting.id, "5_min", slotKey, {
+      title: meeting.title,
+      start_time: meeting.start_time,
+      end_time: meeting.end_time,
+      date: meeting.date,
+    });
+    console.log(`[ReminderJob] [Reminder Sent] 5-minute reminder delivered for "${meeting.title}" (${meeting.id})`);
+  }
 }
 
 async function handleRescheduledMeeting(meeting) {
@@ -150,21 +150,22 @@ async function handleRescheduledMeeting(meeting) {
     const alreadySent = await hasReminderBeenSent(meeting.id, "updated", updateKey);
 
     if (!alreadySent) {
-      await logReminderSent(meeting.id, "updated", updateKey, {
-        old_time: prev.start_time,
-        new_time: meeting.start_time,
-        old_date: prev.date,
-        new_date: meeting.date,
-        updated_at: meeting.updated_at,
-      });
-
-      console.log(`[ReminderJob] [Update Sent] Detected meeting reschedule for "${meeting.title}" (${meeting.id})`);
-
       const oldTimeRange = formatTimeRange(prev.start_time, prev.end_time);
       const newTimeRange = formatTimeRange(meeting.start_time, meeting.end_time);
 
       const text = formatMeetingUpdated(meeting, oldTimeRange, newTimeRange);
-      await sendTelegramMessage(text, { type: "update" });
+      const sent = await sendTelegramMessage(text, { type: "update" });
+
+      if (sent) {
+        await logReminderSent(meeting.id, "updated", updateKey, {
+          old_time: prev.start_time,
+          new_time: meeting.start_time,
+          old_date: prev.date,
+          new_date: meeting.date,
+          updated_at: meeting.updated_at,
+        });
+        console.log(`[ReminderJob] [Update Sent] Delivered meeting reschedule for "${meeting.title}" (${meeting.id})`);
+      }
     }
   }
 }
@@ -175,14 +176,16 @@ async function handleCancelledMeeting(meeting) {
 
   if (alreadySent) return;
 
-  await logReminderSent(meeting.id, "cancelled", cancelKey, {
-    title: meeting.title,
-    cancelled_at: meeting.updated_at,
-  });
-
-  console.log(`[ReminderJob] [Cancellation Sent] Detected cancelled meeting "${meeting.title}" (${meeting.id})`);
   const text = formatMeetingCancelled(meeting);
-  await sendTelegramMessage(text, { type: "cancellation" });
+  const sent = await sendTelegramMessage(text, { type: "cancellation" });
+
+  if (sent) {
+    await logReminderSent(meeting.id, "cancelled", cancelKey, {
+      title: meeting.title,
+      cancelled_at: meeting.updated_at,
+    });
+    console.log(`[ReminderJob] [Cancellation Sent] Delivered cancelled meeting for "${meeting.title}" (${meeting.id})`);
+  }
 }
 
 async function trackMeetingState(meeting) {
