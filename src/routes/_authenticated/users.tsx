@@ -162,7 +162,7 @@ function AdminOnlyMessage() {
 }
 
 function userRoleLabel(role: string | undefined) {
-  if (role === "admin") return "Admin";
+  if (role === "admin") return "District Admin";
   if (role === "manager") return "Manager";
   return "User";
 }
