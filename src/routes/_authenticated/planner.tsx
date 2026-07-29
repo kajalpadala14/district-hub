@@ -338,20 +338,21 @@ function PlannerPage() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       <section className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h2 className="text-3xl font-semibold tracking-tight">Weekly Planner</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
+        <div className="min-w-0">
+          <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">Weekly Planner</h2>
+          <p className="mt-1 whitespace-normal break-words text-sm text-muted-foreground">
             {format(weekStart, "d MMM")} - {format(addDays(weekStart, 6), "d MMM yyyy")} · 30 min
             slots · 15 min breaks
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center lg:justify-end">
           <Button
             variant="outline"
             size="sm"
+            className="w-full sm:w-auto"
             onClick={() => setWeekStart(startOfWeek(new Date(), { weekStartsOn: 1 }))}
           >
             Today
@@ -375,7 +376,7 @@ function PlannerPage() {
           <Button
             variant="outline"
             size="sm"
-            className="bg-info/10 text-info hover:bg-info/15 hover:text-info"
+            className="w-full bg-info/10 text-info hover:bg-info/15 hover:text-info sm:w-auto"
             onClick={exportIcs}
           >
             <Link2 className="h-4 w-4" />
@@ -384,7 +385,7 @@ function PlannerPage() {
           <Button
             variant="outline"
             size="sm"
-            className="bg-success/10 text-success hover:bg-success/15 hover:text-success"
+            className="w-full bg-success/10 text-success hover:bg-success/15 hover:text-success sm:w-auto"
             onClick={copyDayMessage}
           >
             <MessageCircle className="h-4 w-4" />
@@ -403,13 +404,13 @@ function PlannerPage() {
           <Button
             variant="outline"
             size="sm"
-            className="bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary"
+            className="w-full bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary sm:w-auto"
             onClick={() => setShowSettings((value) => !value)}
           >
             <Settings className="h-4 w-4" />
             Settings
           </Button>
-          <Button size="sm" onClick={() => openNew(format(new Date(), "yyyy-MM-dd"))}>
+          <Button size="sm" className="w-full sm:w-auto" onClick={() => openNew(format(new Date(), "yyyy-MM-dd"))}>
             <Plus className="h-4 w-4" />
             Add Meeting
           </Button>
@@ -430,8 +431,62 @@ function PlannerPage() {
         />
       )}
 
-      <section className="overflow-hidden rounded-2xl border bg-card shadow-elevated">
-        <div className="grid min-w-[1100px] grid-cols-7 overflow-x-auto">
+      <section className="grid gap-3 lg:hidden">
+        {days.map((day) => {
+          const key = format(day, "yyyy-MM-dd");
+          const dayTasks = tasksByDay.get(key) ?? [];
+          const today = isSameDay(day, new Date());
+          return (
+            <div key={key} className="overflow-hidden rounded-lg border bg-card shadow-card">
+              <div
+                className={cn(
+                  "flex items-center justify-between gap-3 border-b px-4 py-3",
+                  today && "bg-primary/10",
+                )}
+              >
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    {format(day, "EEEE")}
+                  </p>
+                  <p className={cn("text-xl font-semibold", today && "text-primary")}>
+                    {format(day, "d MMM")}
+                  </p>
+                </div>
+                <Badge variant="outline" className="shrink-0 bg-background/70">
+                  {dayTasks.length} meeting{dayTasks.length === 1 ? "" : "s"}
+                </Badge>
+              </div>
+              <div className="space-y-2 p-2">
+                {slots.map((slot, slotIndex) => {
+                  const task = taskForPlannerSlot(dayTasks, slot, slotIndex);
+                  const openSlot = () => {
+                    if (task) {
+                      openExisting(task, key, slot.range.split(" - ")[0]);
+                    } else {
+                      openNew(key, slot.range.split(" - ")[0]);
+                    }
+                  };
+
+                  return (
+                    <PlannerSlotCard
+                      key={`${key}-${slot.range}`}
+                      slot={slot}
+                      task={task}
+                      deleting={!!task && deletingEventId === task.id}
+                      onOpen={openSlot}
+                      onDelete={deletePlannerMeeting}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </section>
+
+      <section className="hidden overflow-hidden rounded-lg border bg-card shadow-elevated lg:block">
+        <div className="max-w-full overflow-x-auto">
+          <div className="grid min-w-[1100px] grid-cols-7">
           {days.map((day) => {
             const today = isSameDay(day, new Date());
             return (
@@ -514,7 +569,9 @@ function PlannerPage() {
                             <div className="flex items-start gap-1.5">
                               <CalendarDays className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                               <div className="min-w-0">
-                                <p className="truncate text-xs font-semibold">{task.title}</p>
+                                <p className="whitespace-normal break-words text-xs font-semibold leading-snug [overflow-wrap:anywhere]">
+                                  {task.title}
+                                </p>
                                 <p className="mt-1 text-[11px] text-primary/80">
                                   {task.status === "blocked"
                                     ? "Meeting - Cancelled"
@@ -523,7 +580,7 @@ function PlannerPage() {
                                 <p className="text-[11px] text-primary/80">
                                   Time: {task.due_time ? toDisplayTime(task.due_time) : "All day"}
                                 </p>
-                                <p className="truncate text-[11px] text-primary/80">
+                                <p className="whitespace-normal break-words text-[11px] text-primary/80 [overflow-wrap:anywhere]">
                                   {task.department || "Governance Department"}
                                 </p>
                               </div>
@@ -549,6 +606,7 @@ function PlannerPage() {
               </div>
             );
           })}
+          </div>
         </div>
       </section>
 
@@ -562,6 +620,93 @@ function PlannerPage() {
         departments={departments.map((department) => department.name)}
         onSaved={refreshTasks}
       />
+    </div>
+  );
+}
+
+function PlannerSlotCard({
+  slot,
+  task,
+  deleting,
+  onOpen,
+  onDelete,
+}: {
+  slot: PlannerSlot;
+  task: Task | undefined;
+  deleting: boolean;
+  onOpen: () => void;
+  onDelete: (task: Task) => void | Promise<void>;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className={cn(
+        "w-full cursor-pointer rounded-lg border bg-background/80 p-2 text-left shadow-card transition hover:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/30",
+        slot.tall ? "min-h-[72px]" : "min-h-[46px]",
+        task && "border-primary/30 bg-primary/15",
+      )}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground">
+        <span>{slot.range}</span>
+        {!task && <span className="text-muted-foreground/45">Draft Slot</span>}
+      </div>
+      {task ? (
+        <div className="relative mt-2 rounded-md bg-primary/20 p-2 pr-9 text-primary">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="absolute right-1.5 top-1.5 h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+            aria-label={`Delete meeting ${task.title}`}
+            title="Delete meeting"
+            disabled={deleting}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              void onDelete(task);
+            }}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+          <div className="flex items-start gap-1.5">
+            <CalendarDays className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <div className="min-w-0">
+              <p className="whitespace-normal break-words text-xs font-semibold leading-snug [overflow-wrap:anywhere]">
+                {task.title}
+              </p>
+              <p className="mt-1 text-[11px] text-primary/80">
+                {task.status === "blocked" ? "Meeting - Cancelled" : "Meeting - Confirmed"}
+              </p>
+              <p className="text-[11px] text-primary/80">
+                Time: {task.due_time ? toDisplayTime(task.due_time) : "All day"}
+              </p>
+              <p className="whitespace-normal break-words text-[11px] text-primary/80 [overflow-wrap:anywhere]">
+                {task.department || "Governance Department"}
+              </p>
+            </div>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1">
+            <Badge className="h-5 bg-primary text-primary-foreground hover:bg-primary">
+              WhatsApp
+            </Badge>
+            <Badge variant="destructive" className="h-5">
+              !
+            </Badge>
+          </div>
+        </div>
+      ) : (
+        <p className="mt-1 whitespace-normal break-words text-[11px] font-medium text-foreground [overflow-wrap:anywhere]">
+          {slot.label}
+        </p>
+      )}
     </div>
   );
 }
