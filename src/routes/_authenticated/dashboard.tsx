@@ -490,7 +490,11 @@ function MeetingCell({
 }) {
   return (
     <div className="relative flex min-h-24 flex-col items-center justify-center gap-2 border-b px-4 py-4 text-center transition-colors hover:bg-primary/5 sm:border-b-0 sm:border-r last:border-r-0">
-      <Link to="/planner" className="flex min-w-0 flex-col items-center gap-2">
+      <Link
+        to="/planner"
+        search={{ eventId: task.id }}
+        className="flex min-w-0 flex-col items-center gap-2"
+      >
         <span className="text-sm font-extrabold tabular-nums text-slate-700">
           {meetingDateLabel(task)}
         </span>
