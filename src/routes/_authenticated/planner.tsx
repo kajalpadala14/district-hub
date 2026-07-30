@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -722,14 +723,6 @@ function PlannerSlotCard({
                 {task.department || "Governance Department"}
               </p>
             </div>
-          </div>
-          <div className="mt-2 flex flex-wrap gap-1">
-            <Badge className="h-5 bg-primary text-primary-foreground hover:bg-primary">
-              WhatsApp
-            </Badge>
-            <Badge variant="destructive" className="h-5">
-              !
-            </Badge>
           </div>
         </div>
       ) : (
