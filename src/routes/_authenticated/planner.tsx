@@ -1,16 +1,23 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { z } from "zod";
 import { useEffect, useMemo, useState } from "react";
 import { addDays, format, isSameDay, startOfWeek } from "date-fns";
 import {
+  Building,
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  Clock,
+  Edit,
+  FileText,
   Link2,
+  MapPin,
   MessageCircle,
   Plus,
   RefreshCw,
   Settings,
   Trash2,
+  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -44,7 +51,12 @@ import {
   PLANNER_MEETING_TYPE_LINE,
 } from "@/lib/taskClassification";
 
+const plannerSearchSchema = z.object({
+  eventId: z.string().optional(),
+});
+
 export const Route = createFileRoute("/_authenticated/planner")({
+  validateSearch: (search) => plannerSearchSchema.parse(search),
   component: PlannerPage,
 });
 
@@ -85,6 +97,8 @@ const eventColors = [
 
 function PlannerPage() {
   const { user } = useAuth();
+  const navigate = useNavigate();
+  const { eventId } = Route.useSearch();
   const { tasks, refresh: refreshTasks } = usePlannerEvents();
   const { profiles } = useProfiles();
   const { departments } = useDepartments([
@@ -192,11 +206,35 @@ function PlannerPage() {
     setDialogOpen(true);
   };
 
+  useEffect(() => {
+    if (eventId && tasks && tasks.length > 0) {
+      const task = tasks.find((t) => t.id === eventId);
+      if (task) {
+        const targetDateStr = dateKeyForTask(task);
+        if (targetDateStr) {
+          const targetDate = new Date(targetDateStr);
+          if (!isNaN(targetDate.getTime())) {
+            setWeekStart(startOfWeek(targetDate, { weekStartsOn: 1 }));
+          }
+        }
+        const dateKey = targetDateStr || format(new Date(), "yyyy-MM-dd");
+        const time = task.due_time ? toDisplayTime(task.due_time) : "10:00 AM";
+        openExisting(task, dateKey, time);
+      }
+    }
+  }, [eventId, tasks]);
+
   const handleDialogOpenChange = (open: boolean) => {
     setDialogOpen(open);
     if (!open) {
       setEditing(null);
       setDialogMode("create");
+      if (eventId) {
+        void navigate({
+          search: (old) => ({ ...old, eventId: undefined }),
+          replace: true,
+        });
+      }
     }
   };
 
@@ -338,20 +376,21 @@ function PlannerPage() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       <section className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h2 className="text-3xl font-semibold tracking-tight">Weekly Planner</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
+        <div className="min-w-0">
+          <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">Weekly Planner</h2>
+          <p className="mt-1 whitespace-normal break-words text-sm text-muted-foreground">
             {format(weekStart, "d MMM")} - {format(addDays(weekStart, 6), "d MMM yyyy")} · 30 min
             slots · 15 min breaks
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center lg:justify-end">
           <Button
             variant="outline"
             size="sm"
+            className="w-full sm:w-auto"
             onClick={() => setWeekStart(startOfWeek(new Date(), { weekStartsOn: 1 }))}
           >
             Today
@@ -375,7 +414,7 @@ function PlannerPage() {
           <Button
             variant="outline"
             size="sm"
-            className="bg-info/10 text-info hover:bg-info/15 hover:text-info"
+            className="w-full bg-info/10 text-info hover:bg-info/15 hover:text-info sm:w-auto"
             onClick={exportIcs}
           >
             <Link2 className="h-4 w-4" />
@@ -384,7 +423,7 @@ function PlannerPage() {
           <Button
             variant="outline"
             size="sm"
-            className="bg-success/10 text-success hover:bg-success/15 hover:text-success"
+            className="w-full bg-success/10 text-success hover:bg-success/15 hover:text-success sm:w-auto"
             onClick={copyDayMessage}
           >
             <MessageCircle className="h-4 w-4" />
@@ -403,13 +442,13 @@ function PlannerPage() {
           <Button
             variant="outline"
             size="sm"
-            className="bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary"
+            className="w-full bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary sm:w-auto"
             onClick={() => setShowSettings((value) => !value)}
           >
             <Settings className="h-4 w-4" />
             Settings
           </Button>
-          <Button size="sm" onClick={() => openNew(format(new Date(), "yyyy-MM-dd"))}>
+          <Button size="sm" className="w-full sm:w-auto" onClick={() => openNew(format(new Date(), "yyyy-MM-dd"))}>
             <Plus className="h-4 w-4" />
             Add Meeting
           </Button>
@@ -430,8 +469,62 @@ function PlannerPage() {
         />
       )}
 
-      <section className="overflow-hidden rounded-2xl border bg-card shadow-elevated">
-        <div className="grid min-w-[1100px] grid-cols-7 overflow-x-auto">
+      <section className="grid gap-3 lg:hidden">
+        {days.map((day) => {
+          const key = format(day, "yyyy-MM-dd");
+          const dayTasks = tasksByDay.get(key) ?? [];
+          const today = isSameDay(day, new Date());
+          return (
+            <div key={key} className="overflow-hidden rounded-lg border bg-card shadow-card">
+              <div
+                className={cn(
+                  "flex items-center justify-between gap-3 border-b px-4 py-3",
+                  today && "bg-primary/10",
+                )}
+              >
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    {format(day, "EEEE")}
+                  </p>
+                  <p className={cn("text-xl font-semibold", today && "text-primary")}>
+                    {format(day, "d MMM")}
+                  </p>
+                </div>
+                <Badge variant="outline" className="shrink-0 bg-background/70">
+                  {dayTasks.length} meeting{dayTasks.length === 1 ? "" : "s"}
+                </Badge>
+              </div>
+              <div className="space-y-2 p-2">
+                {slots.map((slot, slotIndex) => {
+                  const task = taskForPlannerSlot(dayTasks, slot, slotIndex);
+                  const openSlot = () => {
+                    if (task) {
+                      openExisting(task, key, slot.range.split(" - ")[0]);
+                    } else {
+                      openNew(key, slot.range.split(" - ")[0]);
+                    }
+                  };
+
+                  return (
+                    <PlannerSlotCard
+                      key={`${key}-${slot.range}`}
+                      slot={slot}
+                      task={task}
+                      deleting={!!task && deletingEventId === task.id}
+                      onOpen={openSlot}
+                      onDelete={deletePlannerMeeting}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </section>
+
+      <section className="hidden overflow-hidden rounded-lg border bg-card shadow-elevated lg:block">
+        <div className="max-w-full overflow-x-auto">
+          <div className="grid min-w-[1100px] grid-cols-7">
           {days.map((day) => {
             const today = isSameDay(day, new Date());
             return (
@@ -514,7 +607,9 @@ function PlannerPage() {
                             <div className="flex items-start gap-1.5">
                               <CalendarDays className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                               <div className="min-w-0">
-                                <p className="truncate text-xs font-semibold">{task.title}</p>
+                                <p className="whitespace-normal break-words text-xs font-semibold leading-snug [overflow-wrap:anywhere]">
+                                  {task.title}
+                                </p>
                                 <p className="mt-1 text-[11px] text-primary/80">
                                   {task.status === "blocked"
                                     ? "Meeting - Cancelled"
@@ -523,19 +618,12 @@ function PlannerPage() {
                                 <p className="text-[11px] text-primary/80">
                                   Time: {task.due_time ? toDisplayTime(task.due_time) : "All day"}
                                 </p>
-                                <p className="truncate text-[11px] text-primary/80">
+                                <p className="whitespace-normal break-words text-[11px] text-primary/80 [overflow-wrap:anywhere]">
                                   {task.department || "Governance Department"}
                                 </p>
                               </div>
                             </div>
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              <Badge className="h-5 bg-primary text-primary-foreground hover:bg-primary">
-                                WhatsApp
-                              </Badge>
-                              <Badge variant="destructive" className="h-5">
-                                !
-                              </Badge>
-                            </div>
+
                           </div>
                         ) : (
                           <p className="mt-1 text-[11px] font-medium text-foreground">
@@ -549,6 +637,7 @@ function PlannerPage() {
               </div>
             );
           })}
+          </div>
         </div>
       </section>
 
@@ -562,6 +651,85 @@ function PlannerPage() {
         departments={departments.map((department) => department.name)}
         onSaved={refreshTasks}
       />
+    </div>
+  );
+}
+
+function PlannerSlotCard({
+  slot,
+  task,
+  deleting,
+  onOpen,
+  onDelete,
+}: {
+  slot: PlannerSlot;
+  task: Task | undefined;
+  deleting: boolean;
+  onOpen: () => void;
+  onDelete: (task: Task) => void | Promise<void>;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className={cn(
+        "w-full cursor-pointer rounded-lg border bg-background/80 p-2 text-left shadow-card transition hover:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/30",
+        slot.tall ? "min-h-[72px]" : "min-h-[46px]",
+        task && "border-primary/30 bg-primary/15",
+      )}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground">
+        <span>{slot.range}</span>
+        {!task && <span className="text-muted-foreground/45">Draft Slot</span>}
+      </div>
+      {task ? (
+        <div className="relative mt-2 rounded-md bg-primary/20 p-2 pr-9 text-primary">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="absolute right-1.5 top-1.5 h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+            aria-label={`Delete meeting ${task.title}`}
+            title="Delete meeting"
+            disabled={deleting}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              void onDelete(task);
+            }}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+          <div className="flex items-start gap-1.5">
+            <CalendarDays className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <div className="min-w-0">
+              <p className="whitespace-normal break-words text-xs font-semibold leading-snug [overflow-wrap:anywhere]">
+                {task.title}
+              </p>
+              <p className="mt-1 text-[11px] text-primary/80">
+                {task.status === "blocked" ? "Meeting - Cancelled" : "Meeting - Confirmed"}
+              </p>
+              <p className="text-[11px] text-primary/80">
+                Time: {task.due_time ? toDisplayTime(task.due_time) : "All day"}
+              </p>
+              <p className="whitespace-normal break-words text-[11px] text-primary/80 [overflow-wrap:anywhere]">
+                {task.department || "Governance Department"}
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <p className="mt-1 whitespace-normal break-words text-[11px] font-medium text-foreground [overflow-wrap:anywhere]">
+          {slot.label}
+        </p>
+      )}
     </div>
   );
 }
@@ -647,7 +815,7 @@ function PlannerSettingsPanel({
         </p>
       </div>
 
-      <div className="mt-4 grid min-w-0 gap-4 lg:grid-cols-2">
+      <div className="mt-4 grid min-w-0 gap-4 lg:grid-cols-3">
         <div className="min-w-0 rounded-lg border border-success/30 bg-success/5 p-4">
           <p className="text-xs font-bold uppercase tracking-wide text-success">
             Dashboard to Apple (HTTPS)
@@ -704,6 +872,32 @@ function PlannerSettingsPanel({
             </Button>
           </div>
         </div>
+
+        <div className="min-w-0 rounded-lg border border-sky-500/30 bg-sky-500/5 p-4 flex flex-col justify-between">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wide text-sky-600 dark:text-sky-400">
+              Telegram Bot Notifications
+            </p>
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Get daily updates and query meetings directly on Telegram!
+            </p>
+            <div className="mt-2 text-[10px] sm:text-xs space-y-1 text-muted-foreground font-mono bg-background/50 p-2 rounded border">
+              <div>• /start - Subscribe to daily alerts</div>
+              <div>• /today - Get today's meetings</div>
+              <div>• /week - Get this week's meetings</div>
+              <div>• /previous - Get last week's meetings</div>
+            </div>
+          </div>
+          <div className="mt-3">
+            <Button
+              size="sm"
+              className="w-full bg-sky-500 text-white hover:bg-sky-600 sm:w-auto"
+              onClick={() => window.open("https://t.me/District_Admin_bot", "_blank")}
+            >
+              Open Telegram Bot
+            </Button>
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -754,6 +948,7 @@ function EventDialog({
 }) {
   const isEditMode = mode === "edit" && !!event && !event.id.startsWith("ics-");
   const [saving, setSaving] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
   const [form, setForm] = useState({
     title: "",
     date: "",
@@ -768,19 +963,42 @@ function EventDialog({
   });
 
   useEffect(() => {
-    setForm({
-      title: event?.title ?? "",
-      date: event?.scheduled_date ?? defaultDate ?? format(new Date(), "yyyy-MM-dd"),
-      time: toTimeInput(getEventTime(event?.due_time, defaultTime)),
-      duration: "30m",
-      status: event?.status === "done" ? "Confirmed" : "Confirmed",
-      color: eventColors[0],
-      department: event?.department ?? "None",
-      venue: "",
-      attendees: "",
-      notes: event?.description ?? "",
-    });
-  }, [event, defaultDate, defaultTime, open, isEditMode]);
+    if (open) {
+      setIsEditing(!isEditMode);
+    }
+  }, [open, isEditMode]);
+
+  useEffect(() => {
+    if (open) {
+      if (event) {
+        setForm({
+          title: event.title ?? "",
+          date: event.scheduled_date ?? defaultDate ?? format(new Date(), "yyyy-MM-dd"),
+          time: toTimeInput(getEventTime(event.due_time, defaultTime)),
+          duration: extractDescriptionField(event.description, "Duration") ?? "30m",
+          status: extractDescriptionField(event.description, "Status") ?? "Confirmed",
+          color: extractColor(event.description),
+          department: event.department ?? "None",
+          venue: extractDescriptionField(event.description, "Venue") ?? "",
+          attendees: extractDescriptionField(event.description, "Attendees") ?? "",
+          notes: extractNotes(event.description) ?? "",
+        });
+      } else {
+        setForm({
+          title: "",
+          date: defaultDate ?? format(new Date(), "yyyy-MM-dd"),
+          time: toTimeInput(defaultTime),
+          duration: "30m",
+          status: "Confirmed",
+          color: eventColors[0],
+          department: "None",
+          venue: "",
+          attendees: "",
+          notes: "",
+        });
+      }
+    }
+  }, [event, defaultDate, defaultTime, open]);
 
   const submit = async (submitEvent: React.FormEvent<HTMLFormElement>) => {
     submitEvent.preventDefault();
@@ -857,167 +1075,287 @@ function EventDialog({
       <DialogContent className="max-h-[calc(100dvh-1.5rem)] w-[calc(100vw-1.5rem)] max-w-2xl overflow-hidden border-0 bg-muted p-0 shadow-2xl sm:max-h-[calc(100dvh-3rem)]">
         <DialogHeader className="px-4 pt-4 sm:px-5 sm:pt-5">
           <DialogTitle className="text-xl">
-            {isEditMode ? "Edit Meeting" : "New Meeting"}
+            {isEditing ? (isEditMode ? "Edit Meeting" : "New Meeting") : "Meeting Details"}
           </DialogTitle>
           <DialogDescription className="sr-only">
             Create or edit planner meeting details.
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={submit} className="max-h-[calc(100dvh-7rem)] space-y-4 overflow-y-auto px-4 pb-4 sm:max-h-[calc(100dvh-9rem)] sm:px-5 sm:pb-5">
-          <div className="space-y-1.5">
-            <FieldLabel htmlFor="event-title">Title *</FieldLabel>
-            <Input
-              id="event-title"
-              value={form.title}
-              onChange={(e) => setForm({ ...form, title: e.target.value })}
-              placeholder="Event title"
-              className="min-w-0 bg-background"
-            />
-          </div>
+        {!isEditing ? (
+          <div className="max-h-[calc(100dvh-7rem)] space-y-4 overflow-y-auto px-4 pb-4 sm:max-h-[calc(100dvh-9rem)] sm:px-5 sm:pb-5">
+            <div className="rounded-lg bg-background p-4 shadow-sm border border-border/10">
+              <h3 className="text-lg font-bold text-foreground">{form.title}</h3>
+              {form.department && form.department !== "None" && (
+                <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Building className="h-3.5 w-3.5" />
+                  <span>{form.department}</span>
+                </div>
+              )}
+            </div>
 
-          <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-3">
-            <div className="min-w-0 space-y-1.5">
-              <FieldLabel htmlFor="event-date">Date</FieldLabel>
-              <Input
-                id="event-date"
-                type="date"
-                value={form.date}
-                onChange={(e) => setForm({ ...form, date: e.target.value })}
-                className="min-w-0 bg-background"
-              />
-            </div>
-            <div className="min-w-0 space-y-1.5">
-              <FieldLabel htmlFor="event-time">Time</FieldLabel>
-              <Input
-                id="event-time"
-                type="time"
-                value={form.time}
-                onChange={(e) => setForm({ ...form, time: e.target.value })}
-                className="min-w-0 bg-background"
-              />
-            </div>
-            <div className="min-w-0 space-y-1.5">
-              <FieldLabel>Duration</FieldLabel>
-              <Select
-                value={form.duration}
-                onValueChange={(value) => setForm({ ...form, duration: value })}
-              >
-                <SelectTrigger className="min-w-0 bg-background">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="15m">15m</SelectItem>
-                  <SelectItem value="30m">30m</SelectItem>
-                  <SelectItem value="45m">45m</SelectItem>
-                  <SelectItem value="1h">1h</SelectItem>
-                  <SelectItem value="2h">2h</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="rounded-lg bg-background p-4 shadow-sm border border-border/10 space-y-3">
+                <div className="flex items-start gap-3">
+                  <CalendarDays className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                  <div>
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground block">
+                      Date
+                    </span>
+                    <span className="text-sm font-semibold text-foreground">
+                      {toDisplayDate(form.date)}
+                    </span>
+                  </div>
+                </div>
 
-          <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="min-w-0 space-y-1.5">
-              <FieldLabel>Status</FieldLabel>
-              <Select
-                value={form.status}
-                onValueChange={(value) => setForm({ ...form, status: value })}
-              >
-                <SelectTrigger className="min-w-0 bg-background">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Confirmed">Confirmed</SelectItem>
-                  <SelectItem value="Tentative">Tentative</SelectItem>
-                  <SelectItem value="Cancelled">Cancelled</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="min-w-0 space-y-1.5">
-              <FieldLabel>Color</FieldLabel>
-              <div className="flex min-h-10 flex-wrap items-center gap-1.5 rounded-md bg-background px-2 py-1.5">
-                {eventColors.map((color) => (
-                  <button
-                    key={color}
-                    type="button"
-                    aria-label={color}
-                    onClick={() => setForm({ ...form, color })}
-                    className={cn(
-                      "h-6 w-4 rounded-full ring-offset-2",
-                      color,
-                      form.color === color && "ring-2 ring-primary",
-                    )}
-                  />
-                ))}
+                <div className="flex items-start gap-3">
+                  <Clock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                  <div>
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground block">
+                      Time & Duration
+                    </span>
+                    <span className="text-sm font-semibold text-foreground">
+                      {form.time ? toDisplayTime(form.time) : "All Day"} ({form.duration})
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-lg bg-background p-4 shadow-sm border border-border/10 space-y-3">
+                <div className="flex items-start gap-3">
+                  <div className="mt-1 shrink-0">
+                    <span className={cn(
+                      "inline-block h-2 w-2 rounded-full",
+                      form.status === "Cancelled" ? "bg-destructive" : form.status === "Tentative" ? "bg-warning" : "bg-success"
+                    )} />
+                  </div>
+                  <div>
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground block">
+                      Status
+                    </span>
+                    <span className="text-sm font-semibold text-foreground">
+                      {form.status}
+                    </span>
+                  </div>
+                </div>
+
+                {form.venue && (
+                  <div className="flex items-start gap-3">
+                    <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                    <div>
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground block">
+                        Venue
+                      </span>
+                      <span className="text-sm font-semibold text-foreground">
+                        {form.venue}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
-          </div>
 
-          <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="min-w-0 space-y-1.5">
-              <FieldLabel>Department (Optional)</FieldLabel>
-              <Select
-                value={form.department}
-                onValueChange={(value) => setForm({ ...form, department: value })}
-              >
-                <SelectTrigger className="min-w-0 bg-background">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="None">None</SelectItem>
-                  {departments.map((department) => (
-                    <SelectItem key={department} value={department}>
-                      {department}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            {form.attendees && (
+              <div className="rounded-lg bg-background p-4 shadow-sm border border-border/10 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <Users className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                    Attendees
+                  </span>
+                </div>
+                <p className="text-sm text-foreground">{form.attendees}</p>
+              </div>
+            )}
+
+            <div className="rounded-lg bg-background p-4 shadow-sm border border-border/10 space-y-1.5">
+              <div className="flex items-center gap-2">
+                <FileText className="h-4 w-4 text-muted-foreground" />
+                <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                  Description / Notes
+                </span>
+              </div>
+              <p className="text-sm whitespace-pre-wrap text-foreground min-h-[4rem]">
+                {form.notes || <span className="italic text-muted-foreground text-xs">No description provided.</span>}
+              </p>
             </div>
-            <div className="min-w-0 space-y-1.5">
-              <FieldLabel htmlFor="event-venue">Venue</FieldLabel>
+
+            <DialogFooter className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:space-x-0 pt-2">
+              <Button type="button" variant="secondary" onClick={() => onOpenChange(false)} className="w-full">
+                Close
+              </Button>
+              <Button type="button" onClick={() => setIsEditing(true)} className="w-full flex items-center justify-center gap-2">
+                <Edit className="h-4 w-4" />
+                Edit Meeting
+              </Button>
+            </DialogFooter>
+          </div>
+        ) : (
+          <form onSubmit={submit} className="max-h-[calc(100dvh-7rem)] space-y-4 overflow-y-auto px-4 pb-4 sm:max-h-[calc(100dvh-9rem)] sm:px-5 sm:pb-5">
+            <div className="space-y-1.5">
+              <FieldLabel htmlFor="event-title">Title *</FieldLabel>
               <Input
-                id="event-venue"
-                value={form.venue}
-                onChange={(e) => setForm({ ...form, venue: e.target.value })}
-                placeholder="Meeting room"
+                id="event-title"
+                value={form.title}
+                onChange={(e) => setForm({ ...form, title: e.target.value })}
+                placeholder="Event title"
                 className="min-w-0 bg-background"
               />
             </div>
-          </div>
 
-          <div className="space-y-1.5">
-            <FieldLabel htmlFor="event-attendees">Attendees</FieldLabel>
-            <Input
-              id="event-attendees"
-            value={form.attendees}
-            onChange={(e) => setForm({ ...form, attendees: e.target.value })}
-            placeholder="Comma separated names"
-            className="min-w-0 bg-background"
-          />
-        </div>
+            <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="min-w-0 space-y-1.5">
+                <FieldLabel htmlFor="event-date">Date</FieldLabel>
+                <Input
+                  id="event-date"
+                  type="date"
+                  value={form.date}
+                  onChange={(e) => setForm({ ...form, date: e.target.value })}
+                  className="min-w-0 bg-background"
+                />
+              </div>
+              <div className="min-w-0 space-y-1.5">
+                <FieldLabel htmlFor="event-time">Time</FieldLabel>
+                <Input
+                  id="event-time"
+                  type="time"
+                  value={form.time}
+                  onChange={(e) => setForm({ ...form, time: e.target.value })}
+                  className="min-w-0 bg-background"
+                />
+              </div>
+              <div className="min-w-0 space-y-1.5">
+                <FieldLabel>Duration</FieldLabel>
+                <Select
+                  value={form.duration}
+                  onValueChange={(value) => setForm({ ...form, duration: value })}
+                >
+                  <SelectTrigger className="min-w-0 bg-background">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="15m">15m</SelectItem>
+                    <SelectItem value="30m">30m</SelectItem>
+                    <SelectItem value="45m">45m</SelectItem>
+                    <SelectItem value="1h">1h</SelectItem>
+                    <SelectItem value="2h">2h</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
 
-          <div className="space-y-1.5">
-            <FieldLabel htmlFor="event-notes">Description / Notes</FieldLabel>
-            <Textarea
-              id="event-notes"
-              value={form.notes}
-              onChange={(e) => setForm({ ...form, notes: e.target.value })}
-            placeholder="Notes, agenda, comments..."
-            rows={4}
-            className="min-w-0 resize-none bg-background"
-          />
-        </div>
+            <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="min-w-0 space-y-1.5">
+                <FieldLabel>Status</FieldLabel>
+                <Select
+                  value={form.status}
+                  onValueChange={(value) => setForm({ ...form, status: value })}
+                >
+                  <SelectTrigger className="min-w-0 bg-background">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Confirmed">Confirmed</SelectItem>
+                    <SelectItem value="Tentative">Tentative</SelectItem>
+                    <SelectItem value="Cancelled">Cancelled</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="min-w-0 space-y-1.5">
+                <FieldLabel>Color</FieldLabel>
+                <div className="flex min-h-10 flex-wrap items-center gap-1.5 rounded-md bg-background px-2 py-1.5">
+                  {eventColors.map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      aria-label={color}
+                      onClick={() => setForm({ ...form, color })}
+                      className={cn(
+                        "h-6 w-4 rounded-full ring-offset-2",
+                        color,
+                        form.color === color && "ring-2 ring-primary",
+                      )}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
 
-          <DialogFooter className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:space-x-0">
-            <Button type="button" variant="secondary" onClick={() => onOpenChange(false)} className="w-full">
-              Cancel
-            </Button>
-            <Button type="submit" disabled={saving} className="w-full">
-              {saving ? "Saving..." : "Save Meeting"}
-            </Button>
-          </DialogFooter>
-        </form>
+            <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="min-w-0 space-y-1.5">
+                <FieldLabel>Department (Optional)</FieldLabel>
+                <Select
+                  value={form.department}
+                  onValueChange={(value) => setForm({ ...form, department: value })}
+                >
+                  <SelectTrigger className="min-w-0 bg-background">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="None">None</SelectItem>
+                    {departments.map((department) => (
+                      <SelectItem key={department} value={department}>
+                        {department}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="min-w-0 space-y-1.5">
+                <FieldLabel htmlFor="event-venue">Venue</FieldLabel>
+                <Input
+                  id="event-venue"
+                  value={form.venue}
+                  onChange={(e) => setForm({ ...form, venue: e.target.value })}
+                  placeholder="Meeting room"
+                  className="min-w-0 bg-background"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <FieldLabel htmlFor="event-attendees">Attendees</FieldLabel>
+              <Input
+                id="event-attendees"
+                value={form.attendees}
+                onChange={(e) => setForm({ ...form, attendees: e.target.value })}
+                placeholder="Comma separated names"
+                className="min-w-0 bg-background"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <FieldLabel htmlFor="event-notes">Description / Notes</FieldLabel>
+              <Textarea
+                id="event-notes"
+                value={form.notes}
+                onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                placeholder="Notes, agenda, comments..."
+                rows={4}
+                className="min-w-0 resize-none bg-background"
+              />
+            </div>
+
+            <DialogFooter className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:space-x-0">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  if (isEditMode) {
+                    setIsEditing(false);
+                  } else {
+                    onOpenChange(false);
+                  }
+                }}
+                className="w-full"
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={saving} className="w-full">
+                {saving ? "Saving..." : "Save Meeting"}
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
       </DialogContent>
     </Dialog>
   );
@@ -1521,4 +1859,23 @@ function toDisplayTime(value: string) {
   const period = hour24 >= 12 ? "PM" : "AM";
   const hour12 = hour24 % 12 || 12;
   return `${hour12}:${minute} ${period}`;
+}
+
+function extractNotes(description: string | null | undefined) {
+  if (!description) return "";
+  const lines = description.split(/\r?\n/);
+  const noteLines = lines.filter((line) => {
+    const trimmed = line.trim();
+    if (trimmed.toLowerCase() === PLANNER_MEETING_TYPE_LINE.toLowerCase()) return false;
+    if (/^(Time|Duration|Status|Venue|Attendees|Color):/i.test(trimmed)) return false;
+    return true;
+  });
+  return noteLines.join("\n").trim();
+}
+
+function extractColor(description: string | null | undefined) {
+  const colorName = extractDescriptionField(description, "Color");
+  if (!colorName) return eventColors[0];
+  const found = eventColors.find((c) => c.replace("bg-", "") === colorName);
+  return found || eventColors[0];
 }

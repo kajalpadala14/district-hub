@@ -710,7 +710,7 @@ function TasksManagementPage() {
             </div>
           </div>
 
-          <div className="grid gap-3 p-3 md:grid-cols-2 2xl:hidden">
+          <div className="grid gap-3 p-3 xl:grid-cols-2 2xl:hidden">
             {filtered.length === 0 && (
               <div className="rounded-md border border-dashed py-12 text-center text-sm text-muted-foreground md:col-span-2">
                 No tasks found for the selected filters.
@@ -739,7 +739,21 @@ function TasksManagementPage() {
           </div>
 
           <div className="hidden max-w-full overflow-x-auto 2xl:block">
-            <Table className="min-w-[1320px]">
+            <Table className="min-w-[1180px] table-fixed">
+              <colgroup>
+                {bulkMode && <col className="w-[3rem]" />}
+                <col className="w-[3rem]" />
+                <col className="w-[19rem]" />
+                <col className="w-[5.5rem]" />
+                <col className="w-[4.5rem]" />
+                <col className="w-[16rem]" />
+                <col className="w-[14rem]" />
+                <col className="w-[7rem]" />
+                <col className="w-[6.5rem]" />
+                <col className="w-[6rem]" />
+                <col className="w-[7rem]" />
+                <col className="w-[10rem]" />
+              </colgroup>
               <TableHeader className="bg-muted/45">
                 <TableRow>
                   {bulkMode && (
@@ -747,17 +761,17 @@ function TasksManagementPage() {
                       <Checkbox checked={allVisibleSelected} onCheckedChange={toggleAllVisible} aria-label="Select all visible tasks" />
                     </TableHead>
                   )}
-                  <TableHead className="w-12">S.No</TableHead>
-                  <TableHead className="w-48">Task</TableHead>
-                  <TableHead className="w-24">Due In</TableHead>
-                  <TableHead className="w-16">Image</TableHead>
-                  <TableHead className="w-64">Task Description</TableHead>
-                  <TableHead className="w-36">Comments</TableHead>
-                  <TableHead className="w-36">Assigned To</TableHead>
-                  <TableHead className="w-36">Allocated Date</TableHead>
-                  <TableHead className="w-28">Deadline</TableHead>
-                  <TableHead className="w-32">Status</TableHead>
-                  <TableHead className="w-64 text-right">Actions</TableHead>
+                  <TableHead className="whitespace-normal">S.No</TableHead>
+                  <TableHead className="whitespace-normal">Task</TableHead>
+                  <TableHead className="whitespace-normal">Due In</TableHead>
+                  <TableHead className="whitespace-normal">Image</TableHead>
+                  <TableHead className="whitespace-normal">Task Description</TableHead>
+                  <TableHead className="whitespace-normal">Comments</TableHead>
+                  <TableHead className="whitespace-normal">Assigned To</TableHead>
+                  <TableHead className="whitespace-normal">Allocated Date</TableHead>
+                  <TableHead className="whitespace-normal">Deadline</TableHead>
+                  <TableHead className="whitespace-normal">Status</TableHead>
+                  <TableHead className="whitespace-normal text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -780,29 +794,33 @@ function TasksManagementPage() {
                       </TableCell>
                     )}
                     <TableCell className="font-medium tabular-nums">{index + 1}</TableCell>
-                    <TableCell>
+                    <TableCell className="align-top">
                       <div className="min-w-0">
-                        <p className="truncate font-medium">{task.title}</p>
+                        <p className="whitespace-normal break-words font-medium leading-snug [overflow-wrap:anywhere]">
+                          {task.title}
+                        </p>
                         <div className="mt-1 flex flex-wrap gap-1.5">
                           <PriorityBadge priority={task.priority} />
-                          <Badge variant="outline" className="bg-primary/5 text-primary">{agency}</Badge>
+                          <Badge variant="outline" className="max-w-full whitespace-normal bg-primary/5 text-primary">
+                            <span className="break-words [overflow-wrap:anywhere]">{agency}</span>
+                          </Badge>
                         </div>
                       </div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="align-top">
                       <DueBadge task={task} />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="align-top">
                       <div className="flex h-10 w-10 items-center justify-center rounded-md border bg-muted/30 text-muted-foreground">
                         <FileImage className="h-4 w-4" aria-hidden="true" />
                       </div>
                     </TableCell>
-                    <TableCell>
-                      <p className="line-clamp-2 text-sm text-muted-foreground">
+                    <TableCell className="align-top">
+                      <p className="whitespace-normal break-words text-sm leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
                         {task.description || "No description added for this task."}
                       </p>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="align-top">
                       <TaskCommentComposer
                         task={task}
                         comments={comments}
@@ -811,17 +829,17 @@ function TasksManagementPage() {
                         onSave={handleSaveComment}
                       />
                     </TableCell>
-                    <TableCell className="text-sm">{assignee}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
+                    <TableCell className="whitespace-normal break-words align-top text-sm [overflow-wrap:anywhere]">{assignee}</TableCell>
+                    <TableCell className="whitespace-normal align-top text-sm text-muted-foreground">
                       {formatDate(task.created_at)}
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
+                    <TableCell className="whitespace-normal align-top text-sm text-muted-foreground">
                       {formatDate(task.due_date)}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="align-top">
                       <StatusPill status={displayStatus} />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="align-top">
                       <TaskActions
                         task={task}
                         assignee={assignee}
@@ -1079,7 +1097,9 @@ function TaskMobileCard({
             </span>
             <StatusPill status={displayStatus} />
           </div>
-          <h4 className="mt-3 break-words text-base font-semibold leading-snug">{task.title}</h4>
+          <h4 className="mt-3 whitespace-normal break-words text-base font-semibold leading-snug [overflow-wrap:anywhere]">
+            {task.title}
+          </h4>
         </div>
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border bg-muted/30 text-muted-foreground">
           <FileImage className="h-4 w-4" aria-hidden="true" />
@@ -1088,13 +1108,13 @@ function TaskMobileCard({
 
       <div className="mt-3 flex flex-wrap gap-1.5">
         <PriorityBadge priority={task.priority} />
-        <Badge variant="outline" className="max-w-full bg-primary/5 text-primary">
-          <span className="truncate">{agency}</span>
+        <Badge variant="outline" className="max-w-full whitespace-normal bg-primary/5 text-primary">
+          <span className="break-words [overflow-wrap:anywhere]">{agency}</span>
         </Badge>
         <DueBadge task={task} />
       </div>
 
-      <p className="mt-3 line-clamp-3 break-words text-sm text-muted-foreground">
+      <p className="mt-3 whitespace-normal break-words text-sm leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
         {task.description || "No description added for this task."}
       </p>
 
@@ -1168,12 +1188,12 @@ function TaskCommentComposer({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="group flex w-full min-w-[8rem] items-start gap-2 rounded-md border border-transparent px-2 py-1.5 text-left text-sm transition hover:border-primary/25 hover:bg-primary/5"
+          className="group flex w-full min-w-0 items-start gap-2 rounded-md border border-transparent px-2 py-1.5 text-left text-sm transition hover:border-primary/25 hover:bg-primary/5"
           aria-label={`Add comment for ${task.title}`}
         >
           <MessageSquareText className="mt-0.5 h-4 w-4 shrink-0 text-primary/75" aria-hidden="true" />
-          <span className="min-w-0">
-            <span className={cn("block line-clamp-2 break-words", latestComment ? "text-foreground" : "text-muted-foreground")}>
+          <span className="min-w-0 flex-1">
+            <span className={cn("block whitespace-normal break-words leading-relaxed [overflow-wrap:anywhere]", latestComment ? "text-foreground" : "text-muted-foreground")}>
               {preview}
             </span>
             <span className="mt-1 block text-[11px] font-semibold uppercase tracking-wide text-primary opacity-0 transition group-hover:opacity-100">

@@ -758,33 +758,36 @@ function taskPayload(body: TaskSaveRequest) {
 
 async function getPlannerTaskForUser(taskId: string, userId: string) {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const canManageAllTasks = await userCanViewAllTasks(userId);
-  let query = supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from("planner_events")
-    .select("id,user_id")
+    .select("id,user_id,owner_user_id")
     .eq("id", taskId)
     .maybeSingle();
 
-  if (!canManageAllTasks) {
-    query = query.eq("user_id", userId);
-  }
-
-  const { data, error } = await query;
   if (error) throw error;
-  return data;
+  if (!data) return null;
+  if (data.user_id === userId || data.owner_user_id === userId) return data;
+  return null;
 }
 
 async function getTaskForUser(taskId: string, userId: string, canManageAllTasks: boolean) {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const { data, error } = await supabaseAdmin
     .from("tasks")
-    .select("id,created_by,assignee_id,assigned_to")
+    .select("id,owner_user_id,created_by,assignee_id,assigned_to")
     .eq("id", taskId)
     .maybeSingle();
 
   if (error) throw error;
   if (!data || canManageAllTasks) return data;
-  if (data.created_by === userId || data.assignee_id === userId || data.assigned_to === userId) return data;
+  if (
+    data.owner_user_id === userId ||
+    data.created_by === userId ||
+    data.assignee_id === userId ||
+    data.assigned_to === userId
+  ) {
+    return data;
+  }
   if (await userOwnsProfile(data.assignee_id, userId)) return data;
   return null;
 }
@@ -1083,15 +1086,8 @@ function hashText(value: string) {
   return Math.abs(hash).toString(36);
 }
 
-async function userCanViewAllTasks(userId: string) {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const { data, error } = await supabaseAdmin
-    .from("user_roles")
-    .select("role")
-    .eq("user_id", userId)
-    .eq("role", "admin");
-  if (error) throw error;
-  return (data ?? []).length > 0;
+async function userCanViewAllTasks(_userId: string) {
+  return false;
 }
 
 async function explainEmptyPlannerCalendar(userId: string) {
