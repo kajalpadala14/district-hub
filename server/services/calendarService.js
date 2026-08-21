@@ -387,6 +387,8 @@ function buildIcs(tasks) {
     "PRODID:-//Governance Review Dashboard//Calendar//EN",
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
+    "REFRESH-INTERVAL;VALUE=DURATION:PT15M",
+    "X-PUBLISHED-TTL:PT15M",
     ...tasks.flatMap((task) => {
       const date = task.due_date ?? task.scheduled_date;
       if (!date) return [];

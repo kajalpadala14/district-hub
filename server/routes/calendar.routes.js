@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth.js";
 import { asyncHandler, ApiError } from "../utils/http.js";
@@ -15,6 +16,75 @@ import {
 } from "../services/calendarService.js";
 
 export const calendarRouter = Router();
+
+function calendarNoCacheHeaders(extra = {}) {
+  return {
+    "Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+    ...extra,
+  };
+}
+
+function calendarFeedMeta(ics) {
+  const modifiedMatches = [...ics.matchAll(/^LAST-MODIFIED:(.+)$/gm)];
+  const newestModified = modifiedMatches
+    .map((match) => Date.parse(parseIcsDate(match[1])))
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a)[0];
+
+  return {
+    etag: `"calendar-feed-${createHash("sha256").update(ics).digest("hex").slice(0, 16)}"`,
+    lastModified: newestModified ? new Date(newestModified).toUTCString() : null,
+  };
+}
+
+function sendCalendarFeed(req, res, ics, { attachmentName } = {}) {
+  const meta = calendarFeedMeta(ics);
+  const headers = calendarNoCacheHeaders({
+    "Content-Type": "text/calendar; charset=utf-8",
+    ETag: meta.etag,
+    ...(meta.lastModified ? { "Last-Modified": meta.lastModified } : {}),
+  });
+
+  res.set(headers);
+  if (attachmentName) {
+    res.set("Content-Disposition", `attachment; filename="${attachmentName}"`);
+  }
+
+  if (calendarRequestNotModified(req, meta)) {
+    res.status(304).end();
+    return;
+  }
+
+  res.send(ics);
+}
+
+function calendarRequestNotModified(req, meta) {
+  const ifNoneMatch = req.get("if-none-match");
+  if (ifNoneMatch) {
+    const requestedEtags = ifNoneMatch.split(",").map((value) => value.trim());
+    if (requestedEtags.includes("*") || requestedEtags.includes(meta.etag)) return true;
+  }
+
+  const ifModifiedSince = req.get("if-modified-since");
+  if (ifModifiedSince && meta.lastModified) {
+    const requestedTime = Date.parse(ifModifiedSince);
+    const lastModifiedTime = Date.parse(meta.lastModified);
+    if (Number.isFinite(requestedTime) && Number.isFinite(lastModifiedTime)) {
+      return lastModifiedTime <= requestedTime;
+    }
+  }
+
+  return false;
+}
+
+function parseIcsDate(value) {
+  const compact = String(value ?? "").trim();
+  const match = compact.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/);
+  if (!match) return compact;
+  return `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}Z`;
+}
 
 calendarRouter.get(
   "/status",
@@ -92,9 +162,7 @@ calendarRouter.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     const ics = await exportPlannerIcs(req.user.id);
-    res.header("Content-Type", "text/calendar; charset=utf-8");
-    res.attachment("governance-planner.ics");
-    res.send(ics);
+    sendCalendarFeed(req, res, ics, { attachmentName: "governance-planner.ics" });
   }),
 );
 
@@ -104,7 +172,6 @@ calendarRouter.get(
     const token = String(req.query.token ?? "");
     if (!token) throw new ApiError(400, "token is required");
     const ics = await exportPlannerIcsByToken(token);
-    res.header("Content-Type", "text/calendar; charset=utf-8");
-    res.send(ics);
+    sendCalendarFeed(req, res, ics);
   }),
 );

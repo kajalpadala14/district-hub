@@ -333,7 +333,7 @@ async function handlePlannerIcsExport(request: Request, url: URL) {
     if (!token) {
       return new Response("Planner subscription token is required", {
         status: 400,
-        headers: { "content-type": "text/plain; charset=utf-8" },
+        headers: plannerNoCacheHeaders({ "content-type": "text/plain; charset=utf-8" }),
       });
     }
 
@@ -347,18 +347,26 @@ async function handlePlannerIcsExport(request: Request, url: URL) {
 
     const plannerTasks = await fetchPlannerTasksForCalendar(settings.user_id);
     const feedMeta = plannerIcsFeedMeta(plannerTasks);
+    const headers = plannerIcsHeaders(feedMeta);
+
+    if (plannerIcsNotModified(request, feedMeta)) {
+      return new Response(null, {
+        status: 304,
+        headers,
+      });
+    }
 
     const ics = buildPlannerIcsContent(plannerTasks);
 
     return new Response(ics, {
       status: 200,
-      headers: plannerIcsHeaders(feedMeta),
+      headers,
     });
   } catch (error) {
     console.error("[Planner ICS Export] failed", error);
     return new Response("Planner calendar export failed", {
       status: 500,
-      headers: { "content-type": "text/plain; charset=utf-8" },
+      headers: plannerNoCacheHeaders({ "content-type": "text/plain; charset=utf-8" }),
     });
   }
 }
@@ -655,7 +663,6 @@ function plannerIcsFeedMeta(tasks: PlannerIcsTask[]): PlannerFeedMeta {
 function plannerIcsHeaders(meta: PlannerFeedMeta) {
   return plannerNoCacheHeaders({
     "content-type": "text/calendar; charset=utf-8",
-    "content-disposition": 'attachment; filename="planner.ics"',
     etag: meta.etag,
     ...(meta.lastModified ? { "last-modified": meta.lastModified } : {}),
   });
@@ -665,7 +672,28 @@ function plannerNoCacheHeaders(headers: HeadersInit = {}) {
   return {
     ...headers,
     "cache-control": "no-store, no-cache, max-age=0, must-revalidate",
+    pragma: "no-cache",
+    expires: "0",
   };
+}
+
+function plannerIcsNotModified(request: Request, meta: PlannerFeedMeta) {
+  const ifNoneMatch = request.headers.get("if-none-match");
+  if (ifNoneMatch) {
+    const requestedEtags = ifNoneMatch.split(",").map((value) => value.trim());
+    if (requestedEtags.includes("*") || requestedEtags.includes(meta.etag)) return true;
+  }
+
+  const ifModifiedSince = request.headers.get("if-modified-since");
+  if (ifModifiedSince && meta.lastModified) {
+    const requestedTime = Date.parse(ifModifiedSince);
+    const lastModifiedTime = Date.parse(meta.lastModified);
+    if (Number.isFinite(requestedTime) && Number.isFinite(lastModifiedTime)) {
+      return lastModifiedTime <= requestedTime;
+    }
+  }
+
+  return false;
 }
 
 function plannerTaskPayload(body: PlannerTaskSaveRequest) {
@@ -1129,6 +1157,8 @@ function buildPlannerIcsContent(tasks: PlannerIcsTask[]) {
     "METHOD:PUBLISH",
     "X-WR-CALNAME:District Governance Planner",
     "X-WR-TIMEZONE:Asia/Kolkata",
+    "REFRESH-INTERVAL;VALUE=DURATION:PT15M",
+    "X-PUBLISHED-TTL:PT15M",
     ...buildKolkataTimezone(),
     ...tasks.flatMap((task) => buildPlannerIcsEvent(task)),
     "END:VCALENDAR",
