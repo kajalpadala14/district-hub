@@ -62,6 +62,17 @@ export const Route = createFileRoute("/_authenticated/planner")({
 
 type PlannerSlot = { range: string; label: string | null; tall?: boolean };
 type PlannerDialogMode = "create" | "edit";
+type FieldVisitPlannerPlan = {
+  id: string;
+  title: string;
+  plan_date: string;
+  notes: string | null;
+  status: "draft" | "scheduled" | "sent" | "completed";
+  owner_id: string | null;
+  created_at: string;
+  updated_at: string;
+  field_visit_plan_items?: Array<{ id: string; unit_id: string }>;
+};
 type PlannerSettings = {
   dayStart: string;
   dayEnd: string;
@@ -116,12 +127,20 @@ function PlannerPage() {
   const [plannerSettings, setPlannerSettings] = useState<PlannerSettings>(defaultPlannerSettings);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
+  const [fieldVisitPlans, setFieldVisitPlans] = useState<FieldVisitPlannerPlan[]>([]);
 
   const days = useMemo(
     () => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)),
     [weekStart],
   );
-  const meetings = useMemo(() => tasks.filter(isPlannerMeetingTask), [tasks]);
+  const fieldVisitTasks = useMemo(
+    () => fieldVisitPlans.map(fieldVisitPlanToPlannerTask),
+    [fieldVisitPlans],
+  );
+  const meetings = useMemo(
+    () => [...tasks.filter(isPlannerMeetingTask), ...fieldVisitTasks],
+    [fieldVisitTasks, tasks],
+  );
   const slots = useMemo(
     () => buildPlannerSlots(plannerSettings, meetings, days),
     [plannerSettings, meetings, days],
@@ -176,6 +195,56 @@ function PlannerPage() {
     void loadSettings();
     return () => {
       cancelled = true;
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setFieldVisitPlans([]);
+      return;
+    }
+    let mounted = true;
+
+    const loadFieldVisitPlans = async () => {
+      const { data, error } = await (supabase as unknown as FieldVisitPlannerClient)
+        .from("field_visit_plans")
+        .select("*, field_visit_plan_items(*)")
+        .order("plan_date", { ascending: true })
+        .limit(50);
+
+      if (error) {
+        if (isMissingFieldVisitSchemaError(error)) {
+          if (mounted) setFieldVisitPlans([]);
+          return false;
+        }
+        toast.error(error.message);
+        return false;
+      }
+      if (mounted) setFieldVisitPlans((data ?? []) as FieldVisitPlannerPlan[]);
+      return true;
+    };
+
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    void loadFieldVisitPlans().then((enabled) => {
+      if (!enabled || !mounted) return;
+      channel = supabase
+        .channel(`field-visit-planner-${Math.random().toString(36).slice(2, 9)}`)
+        .on("postgres_changes", { event: "*", schema: "public", table: "field_visit_plans" }, () => {
+          if (mounted) void loadFieldVisitPlans();
+        })
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "field_visit_plan_items" },
+          () => {
+            if (mounted) void loadFieldVisitPlans();
+          },
+        )
+        .subscribe();
+    });
+
+    return () => {
+      mounted = false;
+      if (channel) void supabase.removeChannel(channel);
     };
   }, [user?.id]);
 
@@ -499,6 +568,10 @@ function PlannerPage() {
                   const task = taskForPlannerSlot(dayTasks, slot, slotIndex);
                   const openSlot = () => {
                     if (task) {
+                      if (isFieldVisitPlannerTask(task)) {
+                        void navigate({ to: "/field-visits" });
+                        return;
+                      }
                       openExisting(task, key, slot.range.split(" - ")[0]);
                     } else {
                       openNew(key, slot.range.split(" - ")[0]);
@@ -556,6 +629,10 @@ function PlannerPage() {
                     const showTask = !!task;
                     const openSlot = () => {
                       if (showTask && task) {
+                        if (isFieldVisitPlannerTask(task)) {
+                          void navigate({ to: "/field-visits" });
+                          return;
+                        }
                         openExisting(task, key, slot.range.split(" - ")[0]);
                       } else {
                         openNew(key, slot.range.split(" - ")[0]);
@@ -588,22 +665,24 @@ function PlannerPage() {
                         </div>
                         {showTask && task ? (
                           <div className="relative mt-2 rounded-md bg-primary/20 p-2 pr-9 text-primary">
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="absolute right-1.5 top-1.5 h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                              aria-label={`Delete meeting ${task.title}`}
-                              title="Delete meeting"
-                              disabled={deletingEventId === task.id}
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                void deletePlannerMeeting(task);
-                              }}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
+                            {!isFieldVisitPlannerTask(task) && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="absolute right-1.5 top-1.5 h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                aria-label={`Delete meeting ${task.title}`}
+                                title="Delete meeting"
+                                disabled={deletingEventId === task.id}
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  void deletePlannerMeeting(task);
+                                }}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
                             <div className="flex items-start gap-1.5">
                               <CalendarDays className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                               <div className="min-w-0">
@@ -611,9 +690,7 @@ function PlannerPage() {
                                   {task.title}
                                 </p>
                                 <p className="mt-1 text-[11px] text-primary/80">
-                                  {task.status === "blocked"
-                                    ? "Meeting - Cancelled"
-                                    : "Meeting - Confirmed"}
+                                  {plannerTaskKindLabel(task)}
                                 </p>
                                 <p className="text-[11px] text-primary/80">
                                   Time: {task.due_time ? toDisplayTime(task.due_time) : "All day"}
@@ -623,7 +700,16 @@ function PlannerPage() {
                                 </p>
                               </div>
                             </div>
-
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              <Badge className="h-5 bg-primary text-primary-foreground hover:bg-primary">
+                                {isFieldVisitPlannerTask(task) ? "Field Visit" : "WhatsApp"}
+                              </Badge>
+                              {!isFieldVisitPlannerTask(task) && (
+                                <Badge variant="destructive" className="h-5">
+                                  !
+                                </Badge>
+                              )}
+                            </div>
                           </div>
                         ) : (
                           <p className="mt-1 text-[11px] font-medium text-foreground">
@@ -668,6 +754,7 @@ function PlannerSlotCard({
   onOpen: () => void;
   onDelete: (task: Task) => void | Promise<void>;
 }) {
+  const fieldVisitTask = task ? isFieldVisitPlannerTask(task) : false;
   return (
     <div
       role="button"
@@ -691,22 +778,24 @@ function PlannerSlotCard({
       </div>
       {task ? (
         <div className="relative mt-2 rounded-md bg-primary/20 p-2 pr-9 text-primary">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="absolute right-1.5 top-1.5 h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
-            aria-label={`Delete meeting ${task.title}`}
-            title="Delete meeting"
-            disabled={deleting}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              void onDelete(task);
-            }}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
+          {!fieldVisitTask && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="absolute right-1.5 top-1.5 h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+              aria-label={`Delete meeting ${task.title}`}
+              title="Delete meeting"
+              disabled={deleting}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void onDelete(task);
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          )}
           <div className="flex items-start gap-1.5">
             <CalendarDays className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <div className="min-w-0">
@@ -714,7 +803,7 @@ function PlannerSlotCard({
                 {task.title}
               </p>
               <p className="mt-1 text-[11px] text-primary/80">
-                {task.status === "blocked" ? "Meeting - Cancelled" : "Meeting - Confirmed"}
+                {plannerTaskKindLabel(task)}
               </p>
               <p className="text-[11px] text-primary/80">
                 Time: {task.due_time ? toDisplayTime(task.due_time) : "All day"}
@@ -723,6 +812,16 @@ function PlannerSlotCard({
                 {task.department || "Governance Department"}
               </p>
             </div>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1">
+            <Badge className="h-5 bg-primary text-primary-foreground hover:bg-primary">
+              {fieldVisitTask ? "Field Visit" : "WhatsApp"}
+            </Badge>
+            {!fieldVisitTask && (
+              <Badge variant="destructive" className="h-5">
+                !
+              </Badge>
+            )}
           </div>
         </div>
       ) : (
@@ -1394,6 +1493,19 @@ type PlannerSupabaseClient = {
   };
 };
 
+type FieldVisitPlannerClient = {
+  from(table: "field_visit_plans"): {
+    select: (columns: string) => {
+      order: (
+        column: string,
+        options?: { ascending?: boolean },
+      ) => {
+        limit: (count: number) => PromiseLike<{ data: FieldVisitPlannerPlan[] | null; error: Error | null }>;
+      };
+    };
+  };
+};
+
 function plannerSettingsFromRow(row: PlannerSettingsRow): PlannerSettings {
   return {
     dayStart: timeInputValue(row.day_start),
@@ -1590,6 +1702,68 @@ function validateAppleCalendarUrl(value: string) {
     throw new Error(
       "Apple Calendar URL is invalid. Leave it blank or paste a valid HTTPS/WEBCAL URL.",
     );
+  }
+}
+
+function fieldVisitPlanToPlannerTask(plan: FieldVisitPlannerPlan): Task {
+  const meta = parseFieldVisitPlanNotes(plan.notes);
+  const dueTime = toTimeInput(meta.time) || "10:00";
+  return {
+    id: `field-visit-plan-${plan.id}`,
+    title: plan.title,
+    description: [
+      "Type: Field Visit",
+      meta.notes,
+      `${plan.field_visit_plan_items?.length ?? 0} GP row${(plan.field_visit_plan_items?.length ?? 0) === 1 ? "" : "s"}`,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    status: plan.status === "completed" ? "done" : plan.status === "draft" ? "todo" : "in_progress",
+    priority: "high",
+    department: `Field Visits${meta.duration ? ` - ${meta.duration}` : ""}`,
+    scheduled_date: plan.plan_date,
+    due_date: plan.plan_date,
+    due_time: dueTime,
+    assignee_id: plan.owner_id,
+    created_by: plan.owner_id,
+    created_at: plan.created_at,
+    updated_at: plan.updated_at,
+    calendar_sync_enabled: false,
+  } as Task;
+}
+
+function isFieldVisitPlannerTask(task: Task) {
+  return task.id.startsWith("field-visit-plan-");
+}
+
+function isMissingFieldVisitSchemaError(error: Error) {
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("schema cache") &&
+    (message.includes("field_visit_plans") || message.includes("field_visit_plan_items"))
+  );
+}
+
+function plannerTaskKindLabel(task: Task) {
+  if (isFieldVisitPlannerTask(task)) {
+    if (task.status === "done") return "Field Visit - Completed";
+    if (task.status === "todo") return "Field Visit - Draft";
+    return "Field Visit - Scheduled";
+  }
+  return task.status === "blocked" ? "Meeting - Cancelled" : "Meeting - Confirmed";
+}
+
+function parseFieldVisitPlanNotes(value: string | null) {
+  if (!value) return { time: "", duration: "", notes: "" };
+  try {
+    const parsed = JSON.parse(value) as Partial<Record<"time" | "duration" | "notes", string>>;
+    return {
+      time: parsed.time ?? "",
+      duration: parsed.duration ?? "",
+      notes: parsed.notes ?? "",
+    };
+  } catch {
+    return { time: "", duration: "", notes: value };
   }
 }
 

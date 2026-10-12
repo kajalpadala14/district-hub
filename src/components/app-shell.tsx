@@ -6,6 +6,7 @@ import {
   BarChart3,
   Users,
   UserCog,
+  MapPinned,
   Shield,
   LogOut,
   Menu,
@@ -37,6 +38,7 @@ const nav = [
   { title: "Overview", url: "/dashboard", icon: LayoutDashboard, adminOnly: false },
   { title: "Tasks", url: "/tasks", icon: ListChecks, adminOnly: false },
   { title: "Planner", url: "/planner", icon: CalendarDays, adminOnly: false },
+  { title: "Field Visits", url: "/field-visits", icon: MapPinned, adminOnly: false },
   { title: "Analytics", url: "/analytics", icon: BarChart3, adminOnly: false },
   { title: "Employees", url: "/employees", icon: Users, adminOnly: false },
   { title: "Users", url: "/users", icon: UserCog, adminOnly: true },
@@ -47,10 +49,22 @@ function AppSidebar() {
   const [darkMode, setDarkMode] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const { user, role } = useAuth();
-  const rawDisplayUser = user?.user_metadata?.full_name || user?.user_metadata?.username || user?.email?.split("@")[0] || "User";
+  const rawDisplayUser =
+    user?.user_metadata?.full_name ||
+    user?.user_metadata?.username ||
+    user?.email?.split("@")[0] ||
+    "User";
   const isCollectorUser = rawDisplayUser.trim().toLowerCase() === "collector";
-  const displayUser = isCollectorUser ? "District Collector" : role === "admin" ? "District Admin" : rawDisplayUser;
-  const sidebarTitle = isCollectorUser ? "District Collector" : role === "admin" ? "District Admin" : "District Collector";
+  const displayUser = isCollectorUser
+    ? "District Collector"
+    : role === "admin"
+      ? "District Admin"
+      : rawDisplayUser;
+  const sidebarTitle = isCollectorUser
+    ? "District Collector"
+    : role === "admin"
+      ? "District Admin"
+      : "District Collector";
   const visibleNav = nav.filter((item) => !item.adminOnly || role === "admin");
 
   useEffect(() => {
@@ -78,7 +92,11 @@ function AppSidebar() {
     <Sidebar collapsible="icon">
       <SidebarHeader className="border-b border-sidebar-border">
         <div className="flex items-center gap-2.5 px-2 py-2">
-          <img src="/logo.png" alt="Dantewada District Logo" className="h-9 w-9 object-contain shrink-0" />
+          <img
+            src="/logo.png"
+            alt="Dantewada District Logo"
+            className="h-9 w-9 object-contain shrink-0"
+          />
           <div className="flex flex-col leading-tight group-data-[collapsible=icon]:hidden">
             <span className="text-sm font-semibold">{sidebarTitle}</span>
             <span className="text-xs text-muted-foreground">Governance Portal</span>
@@ -132,7 +150,9 @@ function AppSidebar() {
           onClick={() => void handleLogout()}
         >
           <LogOut className="h-4 w-4" />
-          <span className="group-data-[collapsible=icon]:hidden">{loggingOut ? "Logging out..." : "Logout"}</span>
+          <span className="group-data-[collapsible=icon]:hidden">
+            {loggingOut ? "Logging out..." : "Logout"}
+          </span>
         </Button>
         <div className="mt-1 flex items-center justify-between rounded-lg bg-muted/35 px-2 py-1 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:gap-2">
           <Button variant="ghost" size="icon" aria-label="Menu" className="h-8 w-8">
@@ -159,11 +179,7 @@ function clearSupabaseAuthStorage() {
 
   for (const storage of [window.localStorage, window.sessionStorage]) {
     for (const key of Object.keys(storage)) {
-      if (
-        key === "supabase.auth.token" ||
-        key.startsWith("sb-") ||
-        key.includes("auth-token")
-      ) {
+      if (key === "supabase.auth.token" || key.startsWith("sb-") || key.includes("auth-token")) {
         storage.removeItem(key);
       }
     }
@@ -188,7 +204,9 @@ export function AppShell({ children }: { children: ReactNode }) {
               </h1>
             </div>
           </header>
-          <main className="min-w-0 max-w-full flex-1 overflow-x-hidden p-4 md:p-6 lg:p-8">{children}</main>
+          <main className="min-w-0 max-w-full flex-1 overflow-x-hidden p-4 md:p-6 lg:p-8">
+            {children}
+          </main>
         </div>
         <Toaster richColors position="top-right" />
       </div>
