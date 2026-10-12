@@ -40,6 +40,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/useAuth";
 import { useDepartments, usePlannerEvents, useProfiles, type Task } from "@/hooks/useData";
@@ -63,26 +64,72 @@ export const Route = createFileRoute("/_authenticated/planner")({
 type PlannerSlot = { range: string; label: string | null; tall?: boolean };
 type PlannerDialogMode = "create" | "edit";
 type PlannerSettings = {
+  dayScheduleEnabled: boolean;
   dayStart: string;
   dayEnd: string;
   slotMin: string;
   gapMin: string;
+  gapEnabled: boolean;
   lunchStart: string;
   lunchEnd: string;
+  lunchEnabled: boolean;
   appleIcsUrl: string;
   token: string;
 };
 
 const defaultPlannerSettings: PlannerSettings = {
+  dayScheduleEnabled: false,
   dayStart: "10:00",
   dayEnd: "18:00",
   slotMin: "30",
   gapMin: "15",
+  gapEnabled: false,
   lunchStart: "13:30",
   lunchEnd: "14:30",
+  lunchEnabled: false,
   appleIcsUrl: "",
   token: "",
 };
+
+const TOGGLES_STORAGE_KEY_PREFIX = "planner_toggles_";
+
+function getStoredToggles(userId?: string): {
+  dayScheduleEnabled: boolean;
+  gapEnabled: boolean;
+  lunchEnabled: boolean;
+} {
+  try {
+    if (typeof window !== "undefined") {
+      const key = `${TOGGLES_STORAGE_KEY_PREFIX}${userId || "default"}`;
+      const saved = localStorage.getItem(key);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          dayScheduleEnabled: Boolean(parsed.dayScheduleEnabled),
+          gapEnabled: Boolean(parsed.gapEnabled),
+          lunchEnabled: Boolean(parsed.lunchEnabled),
+        };
+      }
+    }
+  } catch {}
+  return { dayScheduleEnabled: false, gapEnabled: false, lunchEnabled: false };
+}
+
+function persistStoredToggles(
+  userId: string | undefined,
+  toggles: {
+    dayScheduleEnabled: boolean;
+    gapEnabled: boolean;
+    lunchEnabled: boolean;
+  },
+) {
+  try {
+    if (typeof window !== "undefined") {
+      const key = `${TOGGLES_STORAGE_KEY_PREFIX}${userId || "default"}`;
+      localStorage.setItem(key, JSON.stringify(toggles));
+    }
+  } catch {}
+}
 
 const eventColors = [
   "bg-primary",
@@ -113,7 +160,15 @@ function PlannerPage() {
   const [defaultDate, setDefaultDate] = useState<string | null>(null);
   const [defaultTime, setDefaultTime] = useState("10:00 AM");
   const [showSettings, setShowSettings] = useState(false);
-  const [plannerSettings, setPlannerSettings] = useState<PlannerSettings>(defaultPlannerSettings);
+  const [plannerSettings, setPlannerSettings] = useState<PlannerSettings>(() => {
+    const toggles = getStoredToggles();
+    return {
+      ...defaultPlannerSettings,
+      dayScheduleEnabled: toggles.dayScheduleEnabled,
+      gapEnabled: toggles.gapEnabled,
+      lunchEnabled: toggles.lunchEnabled,
+    };
+  });
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
 
@@ -144,6 +199,7 @@ function PlannerPage() {
     let cancelled = false;
 
     const loadSettings = async () => {
+      const toggles = getStoredToggles(user.id);
       const { data, error } = await supabase
         .from("planner_settings")
         .select("*")
@@ -156,7 +212,23 @@ function PlannerPage() {
       }
 
       if (data) {
-        if (!cancelled) setPlannerSettings(plannerSettingsFromRow(data));
+        if (!cancelled) {
+          const loaded = plannerSettingsFromRow(data);
+          setPlannerSettings({
+            ...loaded,
+            dayScheduleEnabled: toggles.dayScheduleEnabled,
+            gapEnabled: toggles.gapEnabled,
+            lunchEnabled: toggles.lunchEnabled,
+          });
+
+          // If day_end in DB was e.g. "05:00" for 5 PM, sync the normalized 17:00 back to DB
+          if (loaded.dayEnd !== timeInputValue(data.day_end)) {
+            void supabase
+              .from("planner_settings")
+              .update({ day_end: loaded.dayEnd })
+              .eq("user_id", user.id);
+          }
+        }
         return;
       }
 
@@ -170,7 +242,14 @@ function PlannerPage() {
         toast.error(createError.message);
         return;
       }
-      if (!cancelled) setPlannerSettings(plannerSettingsFromRow(created));
+      if (!cancelled) {
+        setPlannerSettings({
+          ...plannerSettingsFromRow(created),
+          dayScheduleEnabled: toggles.dayScheduleEnabled,
+          gapEnabled: toggles.gapEnabled,
+          lunchEnabled: toggles.lunchEnabled,
+        });
+      }
     };
 
     void loadSettings();
@@ -247,6 +326,11 @@ function PlannerPage() {
     setSettingsSaving(true);
     try {
       validateAppleCalendarUrl(plannerSettings.appleIcsUrl);
+      persistStoredToggles(user.id, {
+        dayScheduleEnabled: plannerSettings.dayScheduleEnabled,
+        gapEnabled: plannerSettings.gapEnabled,
+        lunchEnabled: plannerSettings.lunchEnabled,
+      });
       const { data, error } = await supabase
         .from("planner_settings")
         .upsert(plannerSettingsToRow(user.id, plannerSettings), { onConflict: "user_id" })
@@ -255,7 +339,12 @@ function PlannerPage() {
 
       if (error) throw error;
       const savedSettings = plannerSettingsFromRow(data);
-      setPlannerSettings(savedSettings);
+      setPlannerSettings({
+        ...savedSettings,
+        dayScheduleEnabled: plannerSettings.dayScheduleEnabled,
+        gapEnabled: plannerSettings.gapEnabled,
+        lunchEnabled: plannerSettings.lunchEnabled,
+      });
       toast.success(
         savedSettings.appleIcsUrl.trim()
           ? "Apple Calendar URL saved. Use the WEBCAL link for live subscription updates."
@@ -286,7 +375,12 @@ function PlannerPage() {
         .single();
 
       if (rpcResult.error) throw rpcResult.error;
-      setPlannerSettings(plannerSettingsFromRow(rpcResult.data));
+      const rotated = plannerSettingsFromRow(rpcResult.data);
+      setPlannerSettings((prev) => ({
+        ...rotated,
+        gapEnabled: prev.gapEnabled,
+        lunchEnabled: prev.lunchEnabled,
+      }));
       toast.success("Planner token rotated. Subscribe calendars with the new URL.");
     } catch (error) {
       try {
@@ -381,8 +475,18 @@ function PlannerPage() {
         <div className="min-w-0">
           <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">Weekly Planner</h2>
           <p className="mt-1 whitespace-normal break-words text-sm text-muted-foreground">
-            {format(weekStart, "d MMM")} - {format(addDays(weekStart, 6), "d MMM yyyy")} · 30 min
-            slots · 15 min breaks
+            {format(weekStart, "d MMM")} - {format(addDays(weekStart, 6), "d MMM yyyy")}
+            {plannerSettings.dayScheduleEnabled ? (
+              <>
+                {" "}· {plannerSettings.slotMin || 30} min slots
+                {plannerSettings.gapEnabled && Number(plannerSettings.gapMin) > 0
+                  ? ` · ${plannerSettings.gapMin} min breaks`
+                  : ""}
+                {plannerSettings.lunchEnabled
+                  ? ` · Lunch (${plannerSettings.lunchStart || "13:30"}-${plannerSettings.lunchEnd || "14:30"})`
+                  : ""}
+              </>
+            ) : null}
           </p>
         </div>
 
@@ -458,6 +562,7 @@ function PlannerPage() {
       {showSettings && (
         <PlannerSettingsPanel
           settings={plannerSettings}
+          userId={user?.id}
           httpsUrl={icsHttpsUrl}
           webcalUrl={icsWebcalUrl}
           subscriptionUrlWarning={subscriptionUrlWarning}
@@ -495,27 +600,67 @@ function PlannerPage() {
                 </Badge>
               </div>
               <div className="space-y-2 p-2">
-                {slots.map((slot, slotIndex) => {
-                  const task = taskForPlannerSlot(dayTasks, slot, slotIndex);
-                  const openSlot = () => {
-                    if (task) {
-                      openExisting(task, key, slot.range.split(" - ")[0]);
-                    } else {
-                      openNew(key, slot.range.split(" - ")[0]);
-                    }
-                  };
+                {plannerSettings.dayScheduleEnabled ? (
+                  slots.map((slot, slotIndex) => {
+                    const task = taskForPlannerSlot(dayTasks, slot, slotIndex);
+                    const openSlot = () => {
+                      if (task) {
+                        openExisting(task, key, slot.range.split(" - ")[0]);
+                      } else {
+                        openNew(key, slot.range.split(" - ")[0]);
+                      }
+                    };
 
-                  return (
-                    <PlannerSlotCard
-                      key={`${key}-${slot.range}`}
-                      slot={slot}
-                      task={task}
-                      deleting={!!task && deletingEventId === task.id}
-                      onOpen={openSlot}
-                      onDelete={deletePlannerMeeting}
-                    />
-                  );
-                })}
+                    return (
+                      <PlannerSlotCard
+                        key={`${key}-${slot.range}`}
+                        slot={slot}
+                        task={task}
+                        deleting={!!task && deletingEventId === task.id}
+                        onOpen={openSlot}
+                        onDelete={deletePlannerMeeting}
+                      />
+                    );
+                  })
+                ) : dayTasks.length > 0 ? (
+                  <div className="space-y-2">
+                    {dayTasks.map((task) => (
+                      <PlannerTaskCard
+                        key={task.id}
+                        task={task}
+                        deleting={deletingEventId === task.id}
+                        onOpen={() =>
+                          openExisting(
+                            task,
+                            key,
+                            task.due_time ? task.due_time.slice(0, 5) : "10:00",
+                          )
+                        }
+                        onDelete={deletePlannerMeeting}
+                      />
+                    ))}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="w-full text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => openNew(key, "10:00")}
+                    >
+                      <Plus className="mr-1 h-3.5 w-3.5" /> Add Meeting
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-border/70 p-4 text-center">
+                    <p className="text-xs text-muted-foreground">No meetings</p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="mt-2 text-xs"
+                      onClick={() => openNew(key, "10:00")}
+                    >
+                      <Plus className="mr-1 h-3.5 w-3.5" /> Add Meeting
+                    </Button>
+                  </div>
+                )}
               </div>
             </div>
           );
@@ -551,88 +696,128 @@ function PlannerPage() {
             return (
               <div key={key} className="border-r border-border/70 last:border-r-0">
                 <div className="space-y-2 p-2">
-                  {slots.map((slot, slotIndex) => {
-                    const task = taskForPlannerSlot(dayTasks, slot, slotIndex);
-                    const showTask = !!task;
-                    const openSlot = () => {
-                      if (showTask && task) {
-                        openExisting(task, key, slot.range.split(" - ")[0]);
-                      } else {
-                        openNew(key, slot.range.split(" - ")[0]);
-                      }
-                    };
+                  {plannerSettings.dayScheduleEnabled ? (
+                    slots.map((slot, slotIndex) => {
+                      const task = taskForPlannerSlot(dayTasks, slot, slotIndex);
+                      const showTask = !!task;
+                      const openSlot = () => {
+                        if (showTask && task) {
+                          openExisting(task, key, slot.range.split(" - ")[0]);
+                        } else {
+                          openNew(key, slot.range.split(" - ")[0]);
+                        }
+                      };
 
-                    return (
-                      <div
-                        key={`${key}-${slot.range}`}
-                        role="button"
-                        tabIndex={0}
-                        className={cn(
-                          "w-full cursor-pointer rounded-lg border bg-background/80 p-2 text-left shadow-card transition hover:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/30",
-                          slot.tall ? "min-h-[72px]" : "min-h-[46px]",
-                          showTask && "border-primary/30 bg-primary/15",
-                        )}
-                        onClick={openSlot}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            openSlot();
-                          }
-                        }}
-                      >
-                        <div className="flex items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground">
-                          <span>{slot.range}</span>
-                          {!showTask && (
-                            <span className="text-muted-foreground/45">Draft Slot</span>
+                      return (
+                        <div
+                          key={`${key}-${slot.range}`}
+                          role="button"
+                          tabIndex={0}
+                          className={cn(
+                            "w-full cursor-pointer rounded-lg border bg-background/80 p-2 text-left shadow-card transition hover:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/30",
+                            slot.tall ? "min-h-[72px]" : "min-h-[46px]",
+                            showTask && "border-primary/30 bg-primary/15",
                           )}
-                        </div>
-                        {showTask && task ? (
-                          <div className="relative mt-2 rounded-md bg-primary/20 p-2 pr-9 text-primary">
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="absolute right-1.5 top-1.5 h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                              aria-label={`Delete meeting ${task.title}`}
-                              title="Delete meeting"
-                              disabled={deletingEventId === task.id}
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                void deletePlannerMeeting(task);
-                              }}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                            <div className="flex items-start gap-1.5">
-                              <CalendarDays className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                              <div className="min-w-0">
-                                <p className="whitespace-normal break-words text-xs font-semibold leading-snug [overflow-wrap:anywhere]">
-                                  {task.title}
-                                </p>
-                                <p className="mt-1 text-[11px] text-primary/80">
-                                  {task.status === "blocked"
-                                    ? "Meeting - Cancelled"
-                                    : "Meeting - Confirmed"}
-                                </p>
-                                <p className="text-[11px] text-primary/80">
-                                  Time: {task.due_time ? toDisplayTime(task.due_time) : "All day"}
-                                </p>
-                                <p className="whitespace-normal break-words text-[11px] text-primary/80 [overflow-wrap:anywhere]">
-                                  {task.department || "Governance Department"}
-                                </p>
+                          onClick={openSlot}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              openSlot();
+                            }
+                          }}
+                        >
+                          <div className="flex items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground">
+                            <span>{slot.range}</span>
+                          </div>
+                          {showTask && task ? (
+                            <div className="relative mt-2 rounded-md bg-primary/20 p-2 pr-9 text-primary">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="absolute right-1.5 top-1.5 h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                aria-label={`Delete meeting ${task.title}`}
+                                title="Delete meeting"
+                                disabled={deletingEventId === task.id}
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  void deletePlannerMeeting(task);
+                                }}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                              <div className="flex items-start gap-1.5">
+                                <CalendarDays className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                <div className="min-w-0">
+                                  <p className="whitespace-normal break-words text-xs font-semibold leading-snug [overflow-wrap:anywhere]">
+                                    {task.title}
+                                  </p>
+                                  <p className="mt-1 text-[11px] text-primary/80">
+                                    {task.status === "blocked"
+                                      ? "Meeting - Cancelled"
+                                      : "Meeting - Confirmed"}
+                                  </p>
+                                  <p className="text-[11px] text-primary/80">
+                                    Time: {task.due_time ? toDisplayTime(task.due_time) : "All day"}
+                                  </p>
+                                  <p className="whitespace-normal break-words text-[11px] text-primary/80 [overflow-wrap:anywhere]">
+                                    {task.department || "Governance Department"}
+                                  </p>
+                                </div>
                               </div>
                             </div>
-
-                          </div>
-                        ) : (
-                          <p className="mt-1 text-[11px] font-medium text-foreground">
-                            {slot.label}
-                          </p>
-                        )}
-                      </div>
-                    );
-                  })}
+                          ) : (
+                            <p className="mt-1 text-[11px] font-medium text-foreground">
+                              {slot.label}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })
+                  ) : dayTasks.length > 0 ? (
+                    <div className="space-y-2">
+                      {dayTasks.map((task) => (
+                        <PlannerTaskCard
+                          key={task.id}
+                          task={task}
+                          deleting={deletingEventId === task.id}
+                          onOpen={() =>
+                            openExisting(
+                              task,
+                              key,
+                              task.due_time ? task.due_time.slice(0, 5) : "10:00",
+                            )
+                          }
+                          onDelete={deletePlannerMeeting}
+                        />
+                      ))}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full text-xs text-muted-foreground hover:text-foreground"
+                        onClick={() => openNew(key, "10:00")}
+                      >
+                        <Plus className="mr-1 h-3.5 w-3.5" /> Add
+                      </Button>
+                    </div>
+                  ) : (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openNew(key, "10:00")}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          openNew(key, "10:00");
+                        }
+                      }}
+                      className="flex min-h-[90px] w-full cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-border/70 p-3 text-center transition hover:border-primary/50 hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    >
+                      <Plus className="h-4 w-4 text-muted-foreground/60" />
+                      <span className="mt-1 text-xs text-muted-foreground/70">Add meeting</span>
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -651,6 +836,69 @@ function PlannerPage() {
         departments={departments.map((department) => department.name)}
         onSaved={refreshTasks}
       />
+    </div>
+  );
+}
+
+function PlannerTaskCard({
+  task,
+  deleting,
+  onOpen,
+  onDelete,
+}: {
+  task: Task;
+  deleting: boolean;
+  onOpen: () => void;
+  onDelete: (task: Task) => void | Promise<void>;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className="w-full cursor-pointer rounded-lg border border-primary/30 bg-primary/15 p-2 text-left shadow-card transition hover:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/30"
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+    >
+      <div className="relative rounded-md bg-primary/20 p-2 pr-9 text-primary">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="absolute right-1.5 top-1.5 h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+          aria-label={`Delete meeting ${task.title}`}
+          title="Delete meeting"
+          disabled={deleting}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void onDelete(task);
+          }}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+        <div className="flex items-start gap-1.5">
+          <CalendarDays className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <div className="min-w-0">
+            <p className="whitespace-normal break-words text-xs font-semibold leading-snug [overflow-wrap:anywhere]">
+              {task.title}
+            </p>
+            <p className="mt-1 text-[11px] text-primary/80">
+              {task.status === "blocked" ? "Meeting - Cancelled" : "Meeting - Confirmed"}
+            </p>
+            <p className="text-[11px] text-primary/80">
+              Time: {task.due_time ? toDisplayTime(task.due_time) : "All day"}
+            </p>
+            <p className="whitespace-normal break-words text-[11px] text-primary/80 [overflow-wrap:anywhere]">
+              {task.department || "Governance Department"}
+            </p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -687,7 +935,6 @@ function PlannerSlotCard({
     >
       <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground">
         <span>{slot.range}</span>
-        {!task && <span className="text-muted-foreground/45">Draft Slot</span>}
       </div>
       {task ? (
         <div className="relative mt-2 rounded-md bg-primary/20 p-2 pr-9 text-primary">
@@ -736,6 +983,7 @@ function PlannerSlotCard({
 
 function PlannerSettingsPanel({
   settings,
+  userId,
   httpsUrl,
   webcalUrl,
   subscriptionUrlWarning,
@@ -746,6 +994,7 @@ function PlannerSettingsPanel({
   saving,
 }: {
   settings: PlannerSettings;
+  userId?: string;
   httpsUrl: string;
   webcalUrl: string;
   subscriptionUrlWarning: string;
@@ -755,55 +1004,170 @@ function PlannerSettingsPanel({
   onRotate: () => void | Promise<void>;
   saving: boolean;
 }) {
-  const update = (key: keyof PlannerSettings, value: string) =>
-    onChange({ ...settings, [key]: value });
+  const update = <K extends keyof PlannerSettings>(key: K, value: PlannerSettings[K]) => {
+    const next = { ...settings, [key]: value };
+    onChange(next);
+    if (key === "dayScheduleEnabled" || key === "gapEnabled" || key === "lunchEnabled") {
+      persistStoredToggles(userId, {
+        dayScheduleEnabled: next.dayScheduleEnabled,
+        gapEnabled: next.gapEnabled,
+        lunchEnabled: next.lunchEnabled,
+      });
+    }
+  };
 
   return (
     <section className="min-w-0 rounded-lg border bg-card p-4 shadow-elevated sm:p-5">
-      <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[repeat(6,minmax(110px,1fr))_minmax(240px,2fr)]">
-        <PlannerSettingInput
-          label="Day Start"
-          type="time"
-          value={settings.dayStart}
-          onChange={(value) => update("dayStart", value)}
-        />
-        <PlannerSettingInput
-          label="Day End"
-          type="time"
-          value={settings.dayEnd}
-          onChange={(value) => update("dayEnd", value)}
-        />
-        <PlannerSettingInput
-          label="Slot (Min)"
-          type="number"
-          value={settings.slotMin}
-          onChange={(value) => update("slotMin", value)}
-        />
-        <PlannerSettingInput
-          label="Gap (Min)"
-          type="number"
-          value={settings.gapMin}
-          onChange={(value) => update("gapMin", value)}
-        />
-        <PlannerSettingInput
-          label="Lunch Start"
-          type="time"
-          value={settings.lunchStart}
-          onChange={(value) => update("lunchStart", value)}
-        />
-        <PlannerSettingInput
-          label="Lunch End"
-          type="time"
-          value={settings.lunchEnd}
-          onChange={(value) => update("lunchEnd", value)}
-        />
-        <div className="min-w-0 sm:col-span-2 lg:col-span-3 2xl:col-span-1">
-          <PlannerSettingInput
-            label="Apple ICS URL"
-            value={settings.appleIcsUrl}
-            onChange={(value) => update("appleIcsUrl", value)}
-          />
+      {/* Day Schedule (Day Start / Day End) Section with On/Off switch */}
+      <div className="rounded-lg border bg-background/50 p-3 shadow-xs transition-colors">
+        <div className="flex items-center justify-between gap-3">
+          <div className="space-y-0.5 min-w-0">
+            <div className="flex items-center gap-2">
+              <FieldLabel>Day Schedule (Day Start & End)</FieldLabel>
+              <Badge
+                variant={settings.dayScheduleEnabled ? "default" : "secondary"}
+                className="text-[10px] uppercase px-1.5 py-0 h-4"
+              >
+                {settings.dayScheduleEnabled ? "ON" : "OFF"}
+              </Badge>
+            </div>
+            <p className="text-xs text-muted-foreground truncate">
+              {settings.dayScheduleEnabled
+                ? "Time slots from Day Start to Day End are active in planner"
+                : "Off (hidden in planner)"}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Switch
+              id="toggle-planner-day-schedule"
+              checked={settings.dayScheduleEnabled}
+              onCheckedChange={(checked) => update("dayScheduleEnabled", checked)}
+              aria-label="Toggle Day Schedule"
+            />
+          </div>
         </div>
+        {settings.dayScheduleEnabled && (
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3 pt-3 border-t">
+            <PlannerSettingInput
+              label="Day Start"
+              type="time"
+              value={settings.dayStart}
+              onChange={(value) => update("dayStart", value)}
+            />
+            <PlannerSettingInput
+              label="Day End"
+              type="time"
+              value={settings.dayEnd}
+              onChange={(value) => update("dayEnd", value)}
+            />
+            <PlannerSettingInput
+              label="Slot (Min)"
+              type="number"
+              value={settings.slotMin}
+              onChange={(value) => update("slotMin", value)}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Row 2: Gap & Lunch Sections with On/Off switches (active when Day Schedule is enabled) */}
+      {settings.dayScheduleEnabled && (
+        <div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">
+          {/* Gap / Break Section */}
+          <div className="rounded-lg border bg-background/50 p-3 shadow-xs transition-colors">
+            <div className="flex items-center justify-between gap-3">
+              <div className="space-y-0.5 min-w-0">
+                <div className="flex items-center gap-2">
+                  <FieldLabel>Gap / Break</FieldLabel>
+                  <Badge
+                    variant={settings.gapEnabled ? "default" : "secondary"}
+                    className="text-[10px] uppercase px-1.5 py-0 h-4"
+                  >
+                    {settings.gapEnabled ? "ON" : "OFF"}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground truncate">
+                  {settings.gapEnabled
+                    ? "Breaks between slots are active in planner"
+                    : "Off (hidden in planner)"}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <Switch
+                  id="toggle-planner-gap"
+                  checked={settings.gapEnabled}
+                  onCheckedChange={(checked) => update("gapEnabled", checked)}
+                  aria-label="Toggle Gap Break"
+                />
+              </div>
+            </div>
+            {settings.gapEnabled && (
+              <div className="mt-3 pt-3 border-t">
+                <PlannerSettingInput
+                  label="Gap (Min)"
+                  type="number"
+                  value={settings.gapMin}
+                  onChange={(value) => update("gapMin", value)}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Lunch Time Section */}
+          <div className="rounded-lg border bg-background/50 p-3 shadow-xs transition-colors">
+            <div className="flex items-center justify-between gap-3">
+              <div className="space-y-0.5 min-w-0">
+                <div className="flex items-center gap-2">
+                  <FieldLabel>Lunch Time</FieldLabel>
+                  <Badge
+                    variant={settings.lunchEnabled ? "default" : "secondary"}
+                    className="text-[10px] uppercase px-1.5 py-0 h-4"
+                  >
+                    {settings.lunchEnabled ? "ON" : "OFF"}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground truncate">
+                  {settings.lunchEnabled
+                    ? "Lunch break slot is active in planner"
+                    : "Off (hidden in planner)"}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <Switch
+                  id="toggle-planner-lunch"
+                  checked={settings.lunchEnabled}
+                  onCheckedChange={(checked) => update("lunchEnabled", checked)}
+                  aria-label="Toggle Lunch Time"
+                />
+              </div>
+            </div>
+            {settings.lunchEnabled && (
+              <div className="mt-3 grid grid-cols-2 gap-2 pt-3 border-t">
+                <PlannerSettingInput
+                  label="Lunch Start"
+                  type="time"
+                  value={settings.lunchStart}
+                  onChange={(value) => update("lunchStart", value)}
+                />
+                <PlannerSettingInput
+                  label="Lunch End"
+                  type="time"
+                  value={settings.lunchEnd}
+                  onChange={(value) => update("lunchEnd", value)}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Row 3: Apple ICS URL */}
+      <div className="mt-3 min-w-0">
+        <PlannerSettingInput
+          label="Apple ICS URL"
+          value={settings.appleIcsUrl}
+          onChange={(value) => update("appleIcsUrl", value)}
+        />
       </div>
 
       <div className="mt-4 flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
@@ -811,7 +1175,9 @@ function PlannerSettingsPanel({
           {saving ? "Saving..." : "Save Settings"}
         </Button>
         <p className="min-w-0 text-sm text-muted-foreground">
-          Default: 10:00-18:00, 30 min slots, 15 min break, lunch 13:30-14:30.
+          {settings.dayScheduleEnabled
+            ? "Default: 10:00-18:00, 30 min slots."
+            : "Day Schedule is OFF by default. Meetings appear directly under their dates."}
         </p>
       </div>
 
@@ -1394,14 +1760,34 @@ type PlannerSupabaseClient = {
   };
 };
 
+function normalizeDayEndTime(dayEnd: string, dayStart: string): string {
+  const startMins = minutesFromTime(dayStart);
+  let endMins = minutesFromTime(dayEnd);
+  // If dayEnd <= dayStart, and adding 12 hours gives a valid PM time after start (e.g. 05:00 -> 17:00)
+  if (endMins <= startMins && endMins < 12 * 60 && endMins + 720 > startMins) {
+    endMins += 720;
+    return timeFromMinutes(endMins);
+  }
+  // If still <= start, fallback to at least start + 8 hours or 18:00
+  if (endMins <= startMins) {
+    return timeFromMinutes(Math.max(startMins + 8 * 60, 18 * 60));
+  }
+  return dayEnd;
+}
+
 function plannerSettingsFromRow(row: PlannerSettingsRow): PlannerSettings {
+  const dayStart = timeInputValue(row.day_start);
+  const dayEnd = normalizeDayEndTime(timeInputValue(row.day_end), dayStart);
   return {
-    dayStart: timeInputValue(row.day_start),
-    dayEnd: timeInputValue(row.day_end),
+    dayScheduleEnabled: false,
+    dayStart,
+    dayEnd,
     slotMin: String(row.slot_min),
     gapMin: String(row.gap_min),
+    gapEnabled: false,
     lunchStart: timeInputValue(row.lunch_start),
     lunchEnd: timeInputValue(row.lunch_end),
+    lunchEnabled: false,
     appleIcsUrl: row.apple_calendar_url ?? row.apple_ics_url ?? "",
     token: row.ics_token ?? row.subscription_token,
   };
@@ -1409,10 +1795,12 @@ function plannerSettingsFromRow(row: PlannerSettingsRow): PlannerSettings {
 
 function plannerSettingsToRow(userId: string, settings: PlannerSettings) {
   const token = settings.token || createPlannerToken();
+  const dayStart = settings.dayStart || defaultPlannerSettings.dayStart;
+  const dayEnd = normalizeDayEndTime(settings.dayEnd || defaultPlannerSettings.dayEnd, dayStart);
   return {
     user_id: userId,
-    day_start: settings.dayStart || defaultPlannerSettings.dayStart,
-    day_end: settings.dayEnd || defaultPlannerSettings.dayEnd,
+    day_start: dayStart,
+    day_end: dayEnd,
     slot_min: Number(settings.slotMin) || Number(defaultPlannerSettings.slotMin),
     gap_min: Number(settings.gapMin) || Number(defaultPlannerSettings.gapMin),
     lunch_start: settings.lunchStart || defaultPlannerSettings.lunchStart,
@@ -1439,7 +1827,14 @@ async function rotatePlannerTokenFallback(userId: string, settings: PlannerSetti
     .select("*")
     .single();
 
-  if (!modernResult.error) return plannerSettingsFromRow(modernResult.data);
+  if (!modernResult.error) {
+    return {
+      ...plannerSettingsFromRow(modernResult.data),
+      dayScheduleEnabled: settings.dayScheduleEnabled,
+      gapEnabled: settings.gapEnabled,
+      lunchEnabled: settings.lunchEnabled,
+    };
+  }
   if (!isPlannerSettingsAliasUnavailable(modernResult.error)) throw modernResult.error;
 
   const legacyResult = await supabase
@@ -1449,7 +1844,12 @@ async function rotatePlannerTokenFallback(userId: string, settings: PlannerSetti
     .single();
 
   if (legacyResult.error) throw legacyResult.error;
-  return plannerSettingsFromRow(legacyResult.data);
+  return {
+    ...plannerSettingsFromRow(legacyResult.data),
+    dayScheduleEnabled: settings.dayScheduleEnabled,
+    gapEnabled: settings.gapEnabled,
+    lunchEnabled: settings.lunchEnabled,
+  };
 }
 
 function isPlannerSettingsAliasUnavailable(error: { message?: string; code?: string } | null) {
@@ -1477,9 +1877,12 @@ function buildPlannerSlots(
   tasks: Task[] = [],
   days: Date[] = [],
 ): PlannerSlot[] {
+  if (!settings.dayScheduleEnabled) {
+    return [];
+  }
   const slots: PlannerSlot[] = [];
   const slotMin = Math.max(5, Number(settings.slotMin) || 30);
-  const gapMin = Math.max(0, Number(settings.gapMin) || 0);
+  const gapMin = settings.gapEnabled ? Math.max(0, Number(settings.gapMin) || 0) : 0;
   const dayKeys = new Set(days.map((day) => format(day, "yyyy-MM-dd")));
   const taskTimes = tasks
     .filter((task) => {
@@ -1489,16 +1892,23 @@ function buildPlannerSlots(
     .map((task) => normalizeTaskTimeMinutes(task.due_time))
     .filter((time): time is number => time !== null);
   const configuredStart = minutesFromTime(settings.dayStart);
-  const configuredEnd = minutesFromTime(settings.dayEnd);
+  let configuredEnd = minutesFromTime(settings.dayEnd);
+  if (configuredEnd <= configuredStart && configuredEnd < 12 * 60 && configuredEnd + 720 > configuredStart) {
+    configuredEnd += 720;
+  }
+  if (configuredEnd <= configuredStart) {
+    configuredEnd = Math.max(configuredStart + 8 * 60, 18 * 60);
+  }
   const earliestTask = taskTimes.length ? Math.min(...taskTimes) : configuredStart;
   const latestTask = taskTimes.length ? Math.max(...taskTimes) + slotMin : configuredEnd;
   let cursor = Math.max(0, Math.min(configuredStart, roundDownMinutes(earliestTask, slotMin)));
   const end = Math.min(24 * 60, Math.max(configuredEnd, roundUpMinutes(latestTask, slotMin)));
-  const lunchStart = minutesFromTime(settings.lunchStart);
-  const lunchEnd = minutesFromTime(settings.lunchEnd);
+  const lunchEnabled = Boolean(settings.lunchEnabled);
+  const lunchStart = lunchEnabled ? minutesFromTime(settings.lunchStart) : -1;
+  const lunchEnd = lunchEnabled ? minutesFromTime(settings.lunchEnd) : -1;
 
   while (cursor < end) {
-    if (cursor === lunchStart && lunchEnd > lunchStart) {
+    if (lunchEnabled && cursor === lunchStart && lunchEnd > lunchStart) {
       slots.push({
         range: `${timeFromMinutes(lunchStart)} - ${timeFromMinutes(lunchEnd)}`,
         label: "Lunch Break",
@@ -1508,7 +1918,7 @@ function buildPlannerSlots(
       continue;
     }
 
-    if (cursor < lunchStart && cursor + slotMin > lunchStart) {
+    if (lunchEnabled && cursor < lunchStart && cursor + slotMin > lunchStart) {
       cursor = lunchStart;
       continue;
     }
@@ -1522,7 +1932,7 @@ function buildPlannerSlots(
     }
     cursor = slotEnd;
 
-    if (gapMin > 0 && cursor < end && !(cursor >= lunchStart && cursor < lunchEnd)) {
+    if (gapMin > 0 && cursor < end && !(lunchEnabled && cursor >= lunchStart && cursor < lunchEnd)) {
       const breakEnd = Math.min(cursor + gapMin, end);
       slots.push({
         range: `${timeFromMinutes(cursor)} - ${timeFromMinutes(breakEnd)}`,
