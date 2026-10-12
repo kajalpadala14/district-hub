@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { addDays, format } from "date-fns";
-import { CalendarDays, ChevronDown, ChevronRight, ClipboardList, Search } from "lucide-react";
+import { CalendarDays, Check, ChevronDown, ChevronRight, ClipboardList, Plus, Search, X } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
 
+import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -20,10 +21,26 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { supabase } from "@/integrations/supabase/client";
 import {
   useDepartments,
@@ -33,6 +50,7 @@ import {
   type TaskStatus,
 } from "@/hooks/useData";
 import { deleteTaskCalendarEvent, syncTaskCalendar } from "@/lib/googleCalendar";
+import { cn } from "@/lib/utils";
 
 interface TaskDialogProps {
   open: boolean;
@@ -49,7 +67,7 @@ const schema = z.object({
   description: z.string().trim().min(2, "Task description required").max(2000),
   priority: z.enum(["low", "medium", "high", "urgent"]),
   status: z.enum(["todo", "in_progress", "blocked", "done"]),
-  assignee_id: z.string().uuid().nullable(),
+  assignee_id: z.string({ invalid_type_error: "Primary Owner required" }).uuid("Primary Owner required"),
   due_date: z.string().nullable(),
   due_time: z.string().nullable(),
   scheduled_date: z.string().nullable(),
@@ -76,7 +94,7 @@ export function TaskDialog({
     priority: "medium" as TaskPriority,
     status: "todo" as TaskStatus,
     assignee_id: null as string | null,
-    second_assignee: "",
+    additional_assignee_ids: [] as string[],
     time_given_days: "",
     due_date: null as string | null,
     scheduled_date: null as string | null,
@@ -90,16 +108,80 @@ export function TaskDialog({
   const employeeOptions = useMemo(() => mergeEmployees(employees), [employees]);
   const { departments } = useDepartments(employeeOptions.map((employee) => employee.department));
 
+  const activeDepartment =
+    form.department && form.department !== "None (General)" ? form.department : null;
+
+  const { departmentEmployees, otherEmployees } = useMemo(() => {
+    if (!activeDepartment) {
+      return { departmentEmployees: employeeOptions, otherEmployees: [] };
+    }
+    const matching: Profile[] = [];
+    const others: Profile[] = [];
+    for (const emp of employeeOptions) {
+      if (isEmployeeMatchingDepartment(emp, activeDepartment)) {
+        matching.push(emp);
+      } else {
+        others.push(emp);
+      }
+    }
+    return { departmentEmployees: matching, otherEmployees: others };
+  }, [employeeOptions, activeDepartment]);
+
+  const handleDepartmentChange = (newDept: string | null) => {
+    const selectedDept = newDept === "None (General)" ? null : newDept;
+    const matching = selectedDept
+      ? employeeOptions.filter((emp) => isEmployeeMatchingDepartment(emp, selectedDept))
+      : [];
+
+    setForm((prev) => {
+      let nextAssigneeId = prev.assignee_id;
+      const currentAssigneeMatches = prev.assignee_id
+        ? matching.some((emp) => emp.id === prev.assignee_id)
+        : false;
+
+      // When a department is selected and current assignee does not match it:
+      // Auto-suggest the first matching employee if available
+      if (selectedDept && matching.length > 0 && !currentAssigneeMatches) {
+        nextAssigneeId = matching[0].id;
+      }
+
+      return {
+        ...prev,
+        department: selectedDept,
+        assignee_id: nextAssigneeId,
+        additional_assignee_ids: prev.additional_assignee_ids.filter((id) => id !== nextAssigneeId),
+      };
+    });
+  };
+
+  const handleAssigneeChange = (assigneeId: string) => {
+    const selectedEmp = employeeOptions.find((emp) => emp.id === assigneeId);
+    setForm((prev) => {
+      let nextDepartment = prev.department;
+      // If department is not selected or General, auto-set to employee's department
+      if ((!prev.department || prev.department === "None (General)") && selectedEmp?.department) {
+        nextDepartment = selectedEmp.department;
+      }
+      return {
+        ...prev,
+        assignee_id: assigneeId,
+        department: nextDepartment,
+        additional_assignee_ids: prev.additional_assignee_ids.filter((id) => id !== assigneeId),
+      };
+    });
+  };
+
   useEffect(() => {
     if (task) {
+      const parsedDescription = parseDescriptionMetadata(task.description || task.title, employeeOptions);
       setForm({
         title: task.title,
-        description: task.description || task.title,
+        description: parsedDescription.description,
         agency: "",
         priority: task.priority,
         status: task.status,
         assignee_id: task.assignee_id,
-        second_assignee: "",
+        additional_assignee_ids: parsedDescription.additionalAssigneeIds.filter((id) => id !== task.assignee_id),
         time_given_days: "",
         due_date: task.due_date,
         scheduled_date: task.scheduled_date,
@@ -118,7 +200,7 @@ export function TaskDialog({
         priority: "medium",
         status: "todo",
         assignee_id: null,
-        second_assignee: "",
+        additional_assignee_ids: [],
         time_given_days: "",
         due_date: null,
         scheduled_date: defaultDate ?? null,
@@ -130,7 +212,7 @@ export function TaskDialog({
       });
       setShowAdvanced(false);
     }
-  }, [task, defaultDate, open]);
+  }, [task, defaultDate, open, employeeOptions]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -142,7 +224,7 @@ export function TaskDialog({
       form.steno_note,
       form.remarks,
       form.agency,
-      form.second_assignee,
+      assigneeNamesFor(form.additional_assignee_ids, employeeOptions),
     );
 
     const parsed = schema.safeParse({
@@ -271,17 +353,20 @@ export function TaskDialog({
                 <FieldLabel>Department</FieldLabel>
                 <Select
                   value={form.department ?? "None (General)"}
-                  onValueChange={(v) => setForm({ ...form, department: v })}
+                  onValueChange={handleDepartmentChange}
                 >
                   <SelectTrigger className="bg-background">
-                    <SelectValue />
+                    <SelectValue placeholder="Select Department" />
                   </SelectTrigger>
                   <SelectContent>
-                    {departments.map((department) => (
-                      <SelectItem key={department.id} value={department.name}>
-                        {department.name}
-                      </SelectItem>
-                    ))}
+                    <SelectItem value="None (General)">None (General)</SelectItem>
+                    {departments
+                      .filter((d) => d.name && d.name !== "None (General)")
+                      .map((department) => (
+                        <SelectItem key={department.id} value={department.name}>
+                          {department.name}
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -289,33 +374,130 @@ export function TaskDialog({
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
-                <FieldLabel>Assigned Employee</FieldLabel>
+                <div className="flex items-center justify-between">
+                  <FieldLabel>Assigned Employee</FieldLabel>
+                  {activeDepartment && (
+                    <span className="text-[10px] font-semibold text-primary">
+                      {departmentEmployees.length > 0
+                        ? `${departmentEmployees.length} in ${activeDepartment}`
+                        : `No staff in ${activeDepartment}`}
+                    </span>
+                  )}
+                </div>
                 <Select
-                  value={form.assignee_id ?? "none"}
-                  onValueChange={(v) => setForm({ ...form, assignee_id: v === "none" ? null : v })}
+                  value={form.assignee_id ?? undefined}
+                  onValueChange={handleAssigneeChange}
                 >
                   <SelectTrigger className="bg-background">
                     <Search className="mr-2 h-3.5 w-3.5 text-muted-foreground" />
-                    <SelectValue placeholder="Search by name or designation" />
+                    <SelectValue placeholder="Select Assigned Employee" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">Unassigned</SelectItem>
-                    {employeeOptions.map((employee) => (
-                      <SelectItem key={employee.id} value={employee.id}>
-                        {employee.full_name || employee.job_title || employee.email}
-                      </SelectItem>
-                    ))}
+                    {activeDepartment && departmentEmployees.length > 0 ? (
+                      <>
+                        <SelectGroup>
+                          <SelectLabel className="text-xs font-semibold text-primary">
+                            ✨ Suggested for {activeDepartment} ({departmentEmployees.length})
+                          </SelectLabel>
+                          {departmentEmployees.map((employee) => (
+                            <SelectItem
+                              key={employee.id}
+                              value={employee.id}
+                              textValue={employeeLabel(employee)}
+                            >
+                              <div className="flex flex-col py-0.5">
+                                <span className="font-medium">{employeeLabel(employee)}</span>
+                                {(employee.job_title || employee.department) && (
+                                  <span className="text-xs text-muted-foreground font-normal">
+                                    {[employee.job_title, employee.department].filter(Boolean).join(" • ")}
+                                  </span>
+                                )}
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                        {otherEmployees.length > 0 && (
+                          <>
+                            <SelectSeparator />
+                            <SelectGroup>
+                              <SelectLabel className="text-xs font-medium text-muted-foreground">
+                                Other Employees ({otherEmployees.length})
+                              </SelectLabel>
+                              {otherEmployees.map((employee) => (
+                                <SelectItem
+                                  key={employee.id}
+                                  value={employee.id}
+                                  textValue={employeeLabel(employee)}
+                                >
+                                  <div className="flex flex-col py-0.5">
+                                    <span>{employeeLabel(employee)}</span>
+                                    {(employee.job_title || employee.department) && (
+                                      <span className="text-xs text-muted-foreground font-normal">
+                                        {[employee.job_title, employee.department].filter(Boolean).join(" • ")}
+                                      </span>
+                                    )}
+                                  </div>
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </>
+                        )}
+                      </>
+                    ) : (
+                      <SelectGroup>
+                        {employeeOptions.map((employee) => (
+                          <SelectItem
+                            key={employee.id}
+                            value={employee.id}
+                            textValue={employeeLabel(employee)}
+                          >
+                            <div className="flex flex-col py-0.5">
+                              <span className="font-medium">{employeeLabel(employee)}</span>
+                              {(employee.job_title || employee.department) && (
+                                <span className="text-xs text-muted-foreground font-normal">
+                                  {[employee.job_title, employee.department].filter(Boolean).join(" • ")}
+                                </span>
+                              )}
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    )}
                   </SelectContent>
                 </Select>
+
+                {activeDepartment && departmentEmployees.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    <span className="text-[11px] font-semibold text-muted-foreground">
+                      Suggested:
+                    </span>
+                    {departmentEmployees.slice(0, 4).map((emp) => {
+                      const isSelected = form.assignee_id === emp.id;
+                      return (
+                        <Badge
+                          key={emp.id}
+                          variant={isSelected ? "default" : "outline"}
+                          className={cn(
+                            "cursor-pointer text-xs transition-colors hover:bg-primary/20",
+                            isSelected && "bg-primary text-primary-foreground hover:bg-primary",
+                          )}
+                          onClick={() => handleAssigneeChange(emp.id)}
+                        >
+                          {employeeLabel(emp)}
+                        </Badge>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
               <div className="space-y-1.5">
-                <FieldLabel htmlFor="second-assignee">Second Assignee</FieldLabel>
-                <Input
-                  id="second-assignee"
-                  value={form.second_assignee}
-                  onChange={(e) => setForm({ ...form, second_assignee: e.target.value })}
-                  placeholder="Optional"
-                  className="bg-background"
+                <FieldLabel>Additional Assignees</FieldLabel>
+                <AdditionalAssigneesSelect
+                  employees={employeeOptions}
+                  selectedIds={form.additional_assignee_ids}
+                  primaryOwnerId={form.assignee_id}
+                  department={form.department}
+                  onChange={(additional_assignee_ids) => setForm({ ...form, additional_assignee_ids })}
                 />
               </div>
             </div>
@@ -463,6 +645,174 @@ function mergeEmployees(primary: Profile[]) {
   );
 }
 
+function AdditionalAssigneesSelect({
+  employees,
+  selectedIds,
+  primaryOwnerId,
+  department,
+  onChange,
+}: {
+  employees: Profile[];
+  selectedIds: string[];
+  primaryOwnerId: string | null;
+  department?: string | null;
+  onChange: (ids: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selectedEmployees = employees.filter((employee) => selectedIds.includes(employee.id));
+  const availableEmployees = employees.filter((employee) => employee.id !== primaryOwnerId);
+  const activeDepartment = department && department !== "None (General)" ? department : null;
+
+  const { suggestedEmployees, otherEmployees } = useMemo(() => {
+    if (!activeDepartment) {
+      return { suggestedEmployees: [], otherEmployees: availableEmployees };
+    }
+    const suggested: Profile[] = [];
+    const others: Profile[] = [];
+    for (const emp of availableEmployees) {
+      if (isEmployeeMatchingDepartment(emp, activeDepartment)) {
+        suggested.push(emp);
+      } else {
+        others.push(emp);
+      }
+    }
+    return { suggestedEmployees: suggested, otherEmployees: others };
+  }, [availableEmployees, activeDepartment]);
+
+  const toggleEmployee = (employeeId: string) => {
+    onChange(
+      selectedIds.includes(employeeId)
+        ? selectedIds.filter((id) => id !== employeeId)
+        : [...selectedIds, employeeId],
+    );
+  };
+
+  const removeEmployee = (employeeId: string) => {
+    onChange(selectedIds.filter((id) => id !== employeeId));
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <div
+          role="combobox"
+          aria-expanded={open}
+          tabIndex={0}
+          className="flex min-h-10 w-full cursor-pointer flex-wrap items-center gap-1.5 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+        >
+          {selectedEmployees.length === 0 ? (
+            <span className="text-muted-foreground">+ Add Employee</span>
+          ) : (
+            selectedEmployees.map((employee) => (
+              <Badge key={employee.id} variant="secondary" className="gap-1 rounded-md px-2 py-1">
+                <span className="max-w-32 truncate">{employeeLabel(employee)}</span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${employeeLabel(employee)}`}
+                  className="rounded-sm text-muted-foreground hover:text-foreground"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    removeEmployee(employee.id);
+                  }}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </Badge>
+            ))
+          )}
+          <ChevronDown className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" />
+        </div>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[--radix-popover-trigger-width] p-0">
+        <Command>
+          <CommandInput placeholder="Search employees..." />
+          <CommandList>
+            <CommandEmpty>No employees found.</CommandEmpty>
+            <CommandGroup>
+              <CommandItem
+                value="+ Add Employee"
+                onSelect={() => toast("Add employees from the Employees page.")}
+              >
+                <Plus className="h-4 w-4 text-primary" />
+                + Add Employee
+              </CommandItem>
+            </CommandGroup>
+            {suggestedEmployees.length > 0 && (
+              <CommandGroup heading={`Suggested for ${activeDepartment} (${suggestedEmployees.length})`}>
+                {suggestedEmployees.map((employee) => {
+                  const selected = selectedIds.includes(employee.id);
+                  return (
+                    <CommandItem
+                      key={employee.id}
+                      value={`${employeeLabel(employee)} ${employee.job_title ?? ""} ${employee.department ?? ""} ${employee.email ?? ""}`}
+                      onSelect={() => toggleEmployee(employee.id)}
+                    >
+                      <Check className={cn("h-4 w-4", selected ? "opacity-100" : "opacity-0")} />
+                      <div className="flex flex-col truncate">
+                        <span className="truncate">{employeeLabel(employee)}</span>
+                        {(employee.job_title || employee.department) && (
+                          <span className="text-[11px] text-muted-foreground">
+                            {[employee.job_title, employee.department].filter(Boolean).join(" • ")}
+                          </span>
+                        )}
+                      </div>
+                    </CommandItem>
+                  );
+                })}
+              </CommandGroup>
+            )}
+            <CommandGroup heading={suggestedEmployees.length > 0 ? `Other Employees (${otherEmployees.length})` : "Employees"}>
+              {otherEmployees.map((employee) => {
+                const selected = selectedIds.includes(employee.id);
+                return (
+                  <CommandItem
+                    key={employee.id}
+                    value={`${employeeLabel(employee)} ${employee.job_title ?? ""} ${employee.department ?? ""} ${employee.email ?? ""}`}
+                    onSelect={() => toggleEmployee(employee.id)}
+                  >
+                    <Check className={cn("h-4 w-4", selected ? "opacity-100" : "opacity-0")} />
+                    <div className="flex flex-col truncate">
+                      <span className="truncate">{employeeLabel(employee)}</span>
+                      {(employee.job_title || employee.department) && (
+                        <span className="text-[11px] text-muted-foreground">
+                          {[employee.job_title, employee.department].filter(Boolean).join(" • ")}
+                        </span>
+                      )}
+                    </div>
+                  </CommandItem>
+                );
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function isEmployeeMatchingDepartment(
+  employee: Profile,
+  deptName: string | null | undefined,
+): boolean {
+  if (!deptName || deptName === "None (General)" || deptName === "all") return true;
+  const targetDept = deptName.trim().toLowerCase();
+  if (!targetDept) return true;
+
+  const empDept = (employee.department ?? "").trim().toLowerCase();
+  if (empDept) {
+    if (empDept === targetDept || empDept.includes(targetDept) || targetDept.includes(empDept)) {
+      return true;
+    }
+  }
+
+  const jobTitle = (employee.job_title ?? "").trim().toLowerCase();
+  if (jobTitle && (jobTitle === targetDept || jobTitle.includes(targetDept))) {
+    return true;
+  }
+
+  return false;
+}
+
 function FieldLabel({ children, htmlFor }: { children: React.ReactNode; htmlFor?: string }) {
   return (
     <Label
@@ -491,15 +841,46 @@ function composeDescription(
   note: string,
   remarks: string,
   agency: string,
-  secondAssignee: string,
+  additionalAssignees: string[],
 ) {
   const extra = [
     agency ? `Other Agency: ${agency}` : "",
-    secondAssignee ? `Second Assignee: ${secondAssignee}` : "",
+    additionalAssignees.length ? `Additional Assignees: ${additionalAssignees.join(", ")}` : "",
     note ? `Steno / Follow-up Note: ${note}` : "",
     remarks ? `Remarks: ${remarks}` : "",
   ].filter(Boolean);
   return extra.length ? `${description.trim()}\n\n${extra.join("\n")}` : description.trim();
+}
+
+function employeeLabel(employee: Profile) {
+  return employee.full_name || employee.job_title || employee.email || "Unnamed employee";
+}
+
+function assigneeNamesFor(ids: string[], employees: Profile[]) {
+  return ids
+    .map((id) => employees.find((employee) => employee.id === id))
+    .filter((employee): employee is Profile => Boolean(employee))
+    .map(employeeLabel);
+}
+
+function parseDescriptionMetadata(description: string, employees: Profile[]) {
+  const employeeByName = new Map(
+    employees.map((employee) => [employeeLabel(employee).trim().toLowerCase(), employee.id]),
+  );
+  const additionalAssigneeIds: string[] = [];
+  const lines = description.split("\n").filter((line) => {
+    const match = line.match(/^(Additional Assignees|Second Assignee):\s*(.+)$/i);
+    if (!match) return true;
+    const names = match[2].split(",").map((name) => name.trim()).filter(Boolean);
+    const ids = names.map((name) => employeeByName.get(name.toLowerCase()));
+    if (ids.some((id) => !id)) return true;
+    additionalAssigneeIds.push(...(ids as string[]));
+    return false;
+  });
+  return {
+    description: lines.join("\n").trim(),
+    additionalAssigneeIds,
+  };
 }
 
 async function syncCalendarAfterSave(taskId: string, syncEnabled: boolean, wasSynced: boolean) {

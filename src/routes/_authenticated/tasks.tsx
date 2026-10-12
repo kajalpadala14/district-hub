@@ -47,6 +47,11 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -176,6 +181,7 @@ function TasksManagementPage() {
       task,
       agency: agencyFor(task),
       assignee: nameFor(task.assignee_id),
+      assigneeList: [nameFor(task.assignee_id), ...additionalAssigneesFor(task.description)],
       assigneeProfile: profileFor(task.assignee_id),
       assignedBy: nameFor(task.created_by),
       displayStatus: displayStatusFor(task),
@@ -187,7 +193,7 @@ function TasksManagementPage() {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return decoratedTasks
-      .filter(({ task, agency, assignee, comments, latestComment, displayStatus }) => {
+      .filter(({ task, agency, assignee, assigneeList, comments, latestComment, displayStatus }) => {
         if (quickFilter === "today" && !isDateToday(task.due_date)) return false;
         if (quickFilter === "important" && task.priority !== "urgent") return false;
         if (statusFilter !== "all" && displayStatus !== statusFilter) return false;
@@ -203,6 +209,7 @@ function TasksManagementPage() {
           agency,
           task.department ?? "",
           assignee,
+          assigneeList.join(" "),
           latestComment,
         ].some((value) => value.toLowerCase().includes(q));
       })
@@ -782,7 +789,7 @@ function TasksManagementPage() {
                     </TableCell>
                   </TableRow>
                 )}
-                {filtered.map(({ task, assignee, assigneeProfile, assignedBy, agency, comments, latestComment, displayStatus }, index) => (
+                {filtered.map(({ task, assignee, assigneeList, assigneeProfile, assignedBy, agency, comments, latestComment, displayStatus }, index) => (
                   <TableRow key={task.id} className="bg-card/70">
                     {bulkMode && (
                       <TableCell>
@@ -829,7 +836,9 @@ function TasksManagementPage() {
                         onSave={handleSaveComment}
                       />
                     </TableCell>
-                    <TableCell className="whitespace-normal break-words align-top text-sm [overflow-wrap:anywhere]">{assignee}</TableCell>
+                    <TableCell className="whitespace-normal break-words align-top text-sm [overflow-wrap:anywhere]">
+                      <AssigneeSummary primary={assignee} assignees={assigneeList} />
+                    </TableCell>
                     <TableCell className="whitespace-normal align-top text-sm text-muted-foreground">
                       {formatDate(task.created_at)}
                     </TableCell>
@@ -1033,6 +1042,7 @@ type TaskListItem = {
   task: Task;
   agency: string;
   assignee: string;
+  assigneeList: string[];
   assigneeProfile: { phone?: string | null; department?: string | null } | null;
   assignedBy: string;
   displayStatus: "pending" | "in_progress" | "completed" | "overdue";
@@ -1079,7 +1089,7 @@ function TaskMobileCard({
   selected?: boolean;
   onToggleSelected?: (taskId: string) => void;
 } & TaskActionHandlers & TaskCommentAction) {
-  const { task, agency, assignee, assigneeProfile, assignedBy, comments, latestComment, displayStatus } = item;
+  const { task, agency, assignee, assigneeList, assigneeProfile, assignedBy, comments, latestComment, displayStatus } = item;
   return (
     <article className={cn("min-w-0 rounded-md border bg-card p-4 shadow-sm", selected && "border-primary/60 ring-2 ring-primary/15")}>
       <div className="flex items-start justify-between gap-3">
@@ -1119,7 +1129,12 @@ function TaskMobileCard({
       </p>
 
       <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
-        <TaskMeta label="Assigned To" value={assignee} />
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Assigned To</p>
+          <div className="mt-1">
+            <AssigneeSummary primary={assignee} assignees={assigneeList} />
+          </div>
+        </div>
         <TaskMeta label="Allocated" value={formatDate(task.created_at)} />
         <TaskMeta label="Deadline" value={formatDate(task.due_date)} />
         <div className="sm:col-span-2">
@@ -1234,6 +1249,47 @@ function TaskMeta({ label, value }: { label: string; value: string }) {
       <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
       <p className="mt-1 break-words font-medium">{value}</p>
     </div>
+  );
+}
+
+function AssigneeSummary({ primary, assignees }: { primary: string; assignees: string[] }) {
+  const others = assignees.filter((name, index) => index > 0 && name !== primary);
+  const content = (
+    <div className="inline-flex min-w-0 flex-col gap-0.5">
+      <span className="inline-flex min-w-0 items-center gap-1.5 font-medium">
+        <UsersRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="truncate">{primary}</span>
+      </span>
+      {others.length > 0 && (
+        <span className="text-xs font-semibold text-primary">+{others.length} Others</span>
+      )}
+    </div>
+  );
+
+  if (others.length === 0) return content;
+
+  return (
+    <HoverCard openDelay={150}>
+      <HoverCardTrigger asChild>
+        <button type="button" className="max-w-full text-left">
+          {content}
+        </button>
+      </HoverCardTrigger>
+      <HoverCardContent align="start" className="w-72 p-3">
+        <ul className="space-y-1.5 text-sm">
+          <li className="flex gap-2">
+            <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-muted-foreground" aria-hidden="true" />
+            <span>{primary} <span className="text-muted-foreground">(Primary Owner)</span></span>
+          </li>
+          {others.map((name) => (
+            <li key={name} className="flex gap-2">
+              <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-muted-foreground" aria-hidden="true" />
+              <span>{name}</span>
+            </li>
+          ))}
+        </ul>
+      </HoverCardContent>
+    </HoverCard>
   );
 }
 
@@ -1558,6 +1614,17 @@ function ScheduleMeetingSheet({
 
 function agencyFor(task: Task) {
   return task.department ? `${task.department} Agency` : "District Administration";
+}
+
+function additionalAssigneesFor(description: string | null | undefined) {
+  if (!description) return [];
+  const names: string[] = [];
+  for (const line of description.split("\n")) {
+    const match = line.match(/^(Additional Assignees|Second Assignee):\s*(.+)$/i);
+    if (!match) continue;
+    names.push(...match[2].split(",").map((name) => name.trim()).filter(Boolean));
+  }
+  return Array.from(new Set(names));
 }
 
 function formatDate(value: string | null | undefined, pattern = "MMM d, yyyy") {

@@ -74,6 +74,7 @@ export function initScheduler() {
     cron.schedule(
       reminderJobSchedule,
       async () => {
+        console.log(`[Scheduler] [${new Date().toISOString()}] Minute-by-minute reminder cron triggered.`);
         await runReminderJob();
       },
       {

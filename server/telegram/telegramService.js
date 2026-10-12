@@ -22,8 +22,7 @@ export function getTargetChatId() {
 }
 
 /**
- * Sends a message to Telegram group or target Chat ID with exponential backoff retries.
- * Logs specific categories: Digest Sent, Reminder Sent, Cancellation Sent, Update Sent, Retry Attempt, Telegram API Errors.
+ * Sends a message to Telegram group or target Chat ID returning detailed execution and API response object.
  *
  * @param {string} text - HTML formatted message body
  * @param {Object} [options]
@@ -32,21 +31,33 @@ export function getTargetChatId() {
  * @param {Object} [options.reply_markup]
  * @param {boolean} [options.disable_web_page_preview=false]
  * @param {number} [options.maxRetries=3]
- * @returns {Promise<boolean>}
+ * @returns {Promise<{success: boolean, ok: boolean, chatId: string|null, messageId?: number|string, reason?: string, response: any}>}
  */
-export async function sendTelegramMessage(text, options = {}) {
+export async function sendTelegramMessageDetailed(text, options = {}) {
   const { telegramBotToken } = env;
   const targetChatId = options.chatId || getTargetChatId();
   const messageType = options.type ?? "message";
 
   if (!telegramBotToken) {
     console.warn(`[TelegramService] TELEGRAM_BOT_TOKEN is missing in .env. Message delivery skipped.`);
-    return false;
+    return {
+      success: false,
+      ok: false,
+      chatId: targetChatId || null,
+      reason: "TELEGRAM_BOT_TOKEN is missing in .env",
+      response: { error: "TELEGRAM_BOT_TOKEN_MISSING" },
+    };
   }
 
   if (!targetChatId) {
     console.warn(`[TelegramService] Target Chat ID is missing. Please send /today or add bot to group to set target chat.`);
-    return false;
+    return {
+      success: false,
+      ok: false,
+      chatId: null,
+      reason: "Target Chat ID is missing. Send /today in Telegram group to configure.",
+      response: { error: "TARGET_CHAT_ID_MISSING" },
+    };
   }
 
   console.log(`[TelegramService] [OUTGOING MESSAGE] Type: ${messageType.toUpperCase()} | Target Chat: ${targetChatId}\n--- Content ---\n${text}\n----------------`);
@@ -66,6 +77,8 @@ export async function sendTelegramMessage(text, options = {}) {
   const maxRetries = options.maxRetries ?? 3;
   let attempt = 0;
   let delay = 1000;
+  let lastData = null;
+  let lastError = null;
 
   while (attempt < maxRetries) {
     attempt++;
@@ -77,17 +90,30 @@ export async function sendTelegramMessage(text, options = {}) {
       });
 
       const data = await response.json();
+      lastData = data;
 
       if (response.ok && data.ok) {
         logSuccessCategory(messageType, targetChatId, data.result?.message_id);
         // Cache successful chat ID as active target
         setActiveGroupChatId(targetChatId);
-        return true;
+        return {
+          success: true,
+          ok: true,
+          chatId: targetChatId,
+          messageId: data.result?.message_id,
+          response: data,
+        };
       }
 
       if (data.error_code === 400 && data.description?.includes("chat not found")) {
         console.error(`[TelegramService] [Telegram API Errors] Chat ID ${targetChatId} not found. Please ensure bot is added to your Telegram group or send /today in group.`);
-        return false;
+        return {
+          success: false,
+          ok: false,
+          chatId: targetChatId,
+          reason: `Chat ID ${targetChatId} not found`,
+          response: data,
+        };
       }
 
       console.error(`[TelegramService] [Telegram API Errors] Error on attempt ${attempt}/${maxRetries}:`, data);
@@ -96,6 +122,7 @@ export async function sendTelegramMessage(text, options = {}) {
         delay = data.parameters.retry_after * 1000;
       }
     } catch (err) {
+      lastError = err.message;
       console.error(`[TelegramService] [Telegram API Errors] Network exception on attempt ${attempt}/${maxRetries}:`, err.message);
     }
 
@@ -107,7 +134,25 @@ export async function sendTelegramMessage(text, options = {}) {
   }
 
   console.error(`[TelegramService] [Telegram API Errors] Delivery failed after ${maxRetries} attempts for message type '${messageType}'.`);
-  return false;
+  return {
+    success: false,
+    ok: false,
+    chatId: targetChatId,
+    reason: lastError || (lastData ? lastData.description : `Delivery failed after ${maxRetries} attempts`),
+    response: lastData || { error: lastError },
+  };
+}
+
+/**
+ * Sends a message to Telegram group or target Chat ID returning boolean.
+ *
+ * @param {string} text - HTML formatted message body
+ * @param {Object} [options]
+ * @returns {Promise<boolean>}
+ */
+export async function sendTelegramMessage(text, options = {}) {
+  const result = await sendTelegramMessageDetailed(text, options);
+  return result.success;
 }
 
 function logSuccessCategory(type, chatId, messageId) {

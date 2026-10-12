@@ -322,7 +322,6 @@ function GovernanceOverviewPage() {
                   tone="primary"
                 />
                 <TimelineChip label="Reviews" count={reviewTasks.length} tone="violet" />
-                <TimelineChip label="Field Visits" count={fieldVisitTasks.length} tone="success" />
               </div>
               <div className="mt-5 max-h-[420px] space-y-3 overflow-y-auto pr-1">
                 {weekTimeline.length === 0 ? (

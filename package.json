@@ -3,6 +3,9 @@
   "private": true,
   "sideEffects": false,
   "type": "module",
+  "overrides": {
+    "@tanstack/start-server-core": "1.169.40"
+  },
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
@@ -15,6 +18,8 @@
     "api:calendar-jobs": "node server/scripts/processCalendarJobs.js",
     "backend:check-env": "node scripts/check-env.mjs",
     "backend:verify-tasks": "node scripts/verify-task-backend.mjs",
+    "backend:verify-field-visits": "node scripts/verify-field-visits-db.mjs",
+    "test:field-visits": "node --test scripts/test-field-visits.mjs",
     "test:planner-ics": "node --test scripts/test-planner-ics.mjs",
     "lint": "eslint .",
     "format": "prettier --write ."
@@ -54,6 +59,7 @@
     "@tanstack/react-router": "^1.170.16",
     "@tanstack/react-start": "^1.168.26",
     "@tanstack/router-plugin": "^1.168.18",
+    "@types/leaflet": "^1.9.22",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
@@ -61,6 +67,7 @@
     "embla-carousel-react": "^8.6.0",
     "express": "^5.2.1",
     "input-otp": "^1.4.2",
+    "leaflet": "^1.9.4",
     "lucide-react": "^0.575.0",
     "node-cron": "^4.6.0",
     "react": "^19.2.0",

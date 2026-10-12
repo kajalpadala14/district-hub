@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { z } from "zod";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { addDays, format, isSameDay, startOfWeek } from "date-fns";
 import {
   Building,
@@ -63,6 +63,17 @@ export const Route = createFileRoute("/_authenticated/planner")({
 
 type PlannerSlot = { range: string; label: string | null; tall?: boolean };
 type PlannerDialogMode = "create" | "edit";
+type FieldVisitPlannerPlan = {
+  id: string;
+  title: string;
+  plan_date: string;
+  notes: string | null;
+  status: "draft" | "scheduled" | "sent" | "completed";
+  owner_id: string | null;
+  created_at: string;
+  updated_at: string;
+  field_visit_plan_items?: Array<{ id: string; unit_id: string }>;
+};
 type PlannerSettings = {
   dayScheduleEnabled: boolean;
   dayStart: string;
@@ -171,12 +182,20 @@ function PlannerPage() {
   });
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
+  const [fieldVisitPlans, setFieldVisitPlans] = useState<FieldVisitPlannerPlan[]>([]);
 
   const days = useMemo(
     () => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)),
     [weekStart],
   );
-  const meetings = useMemo(() => tasks.filter(isPlannerMeetingTask), [tasks]);
+  const fieldVisitTasks = useMemo(
+    () => fieldVisitPlans.map(fieldVisitPlanToPlannerTask),
+    [fieldVisitPlans],
+  );
+  const meetings = useMemo(
+    () => [...tasks.filter(isPlannerMeetingTask), ...fieldVisitTasks],
+    [fieldVisitTasks, tasks],
+  );
   const slots = useMemo(
     () => buildPlannerSlots(plannerSettings, meetings, days),
     [plannerSettings, meetings, days],
@@ -200,26 +219,48 @@ function PlannerPage() {
 
     const loadSettings = async () => {
       const toggles = getStoredToggles(user.id);
+      try {
+        const cached = localStorage.getItem(`planner_settings_${user.id}`);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed && typeof parsed === "object" && !cancelled) {
+            setPlannerSettings((prev) => ({
+              ...prev,
+              ...parsed,
+              dayScheduleEnabled: toggles.dayScheduleEnabled,
+              gapEnabled: toggles.gapEnabled,
+              lunchEnabled: toggles.lunchEnabled,
+            }));
+          }
+        }
+      } catch {
+        // ignore
+      }
+
       const { data, error } = await supabase
         .from("planner_settings")
         .select("*")
-        .eq("user_id", user.id)
+        .or(`owner_user_id.eq.${user.id},user_id.eq.${user.id}`)
         .maybeSingle();
 
       if (error) {
-        toast.error(error.message);
+        console.warn("[Load planner_settings error]", error);
         return;
       }
 
       if (data) {
         if (!cancelled) {
           const loaded = plannerSettingsFromRow(data);
-          setPlannerSettings({
+          const merged = {
             ...loaded,
             dayScheduleEnabled: toggles.dayScheduleEnabled,
             gapEnabled: toggles.gapEnabled,
             lunchEnabled: toggles.lunchEnabled,
-          });
+          };
+          setPlannerSettings(merged);
+          try {
+            localStorage.setItem(`planner_settings_${user.id}`, JSON.stringify(merged));
+          } catch {}
 
           // If day_end in DB was e.g. "05:00" for 5 PM, sync the normalized 17:00 back to DB
           if (loaded.dayEnd !== timeInputValue(data.day_end)) {
@@ -232,29 +273,84 @@ function PlannerPage() {
         return;
       }
 
-      const { data: created, error: createError } = await supabase
-        .from("planner_settings")
-        .insert({ user_id: user.id })
-        .select("*")
-        .single();
+      try {
+        const initialRow = plannerSettingsToRow(user.id, defaultPlannerSettings);
+        const { data: created, error: createError } = await supabase
+          .from("planner_settings")
+          .upsert(initialRow, { onConflict: "user_id" })
+          .select("*")
+          .maybeSingle();
 
-      if (createError) {
-        toast.error(createError.message);
-        return;
-      }
-      if (!cancelled) {
-        setPlannerSettings({
-          ...plannerSettingsFromRow(created),
-          dayScheduleEnabled: toggles.dayScheduleEnabled,
-          gapEnabled: toggles.gapEnabled,
-          lunchEnabled: toggles.lunchEnabled,
-        });
+        if (!createError && created && !cancelled) {
+          const initial = {
+            ...plannerSettingsFromRow(created),
+            dayScheduleEnabled: toggles.dayScheduleEnabled,
+            gapEnabled: toggles.gapEnabled,
+            lunchEnabled: toggles.lunchEnabled,
+          };
+          setPlannerSettings(initial);
+          try {
+            localStorage.setItem(`planner_settings_${user.id}`, JSON.stringify(initial));
+          } catch {}
+        }
+      } catch (err) {
+        console.warn("[Create initial planner_settings error]", err);
       }
     };
 
     void loadSettings();
     return () => {
       cancelled = true;
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setFieldVisitPlans([]);
+      return;
+    }
+    let mounted = true;
+
+    const loadFieldVisitPlans = async () => {
+      const { data, error } = await (supabase as unknown as FieldVisitPlannerClient)
+        .from("field_visit_plans")
+        .select("*, field_visit_plan_items(*)")
+        .order("plan_date", { ascending: true })
+        .limit(50);
+
+      if (error) {
+        if (isMissingFieldVisitSchemaError(error)) {
+          if (mounted) setFieldVisitPlans([]);
+          return false;
+        }
+        toast.error(error.message);
+        return false;
+      }
+      if (mounted) setFieldVisitPlans((data ?? []) as FieldVisitPlannerPlan[]);
+      return true;
+    };
+
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    void loadFieldVisitPlans().then((enabled) => {
+      if (!enabled || !mounted) return;
+      channel = supabase
+        .channel(`field-visit-planner-${Math.random().toString(36).slice(2, 9)}`)
+        .on("postgres_changes", { event: "*", schema: "public", table: "field_visit_plans" }, () => {
+          if (mounted) void loadFieldVisitPlans();
+        })
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "field_visit_plan_items" },
+          () => {
+            if (mounted) void loadFieldVisitPlans();
+          },
+        )
+        .subscribe();
+    });
+
+    return () => {
+      mounted = false;
+      if (channel) void supabase.removeChannel(channel);
     };
   }, [user?.id]);
 
@@ -319,7 +415,12 @@ function PlannerPage() {
 
   const savePlannerSettings = async () => {
     if (!user?.id) {
-      toast.error("Sign in required to save planner settings");
+      try {
+        localStorage.setItem("local_planner_settings", JSON.stringify(plannerSettings));
+        toast.success("Planner settings saved locally!");
+      } catch {
+        toast.error("Sign in required to save planner settings");
+      }
       return;
     }
 
@@ -331,26 +432,63 @@ function PlannerPage() {
         gapEnabled: plannerSettings.gapEnabled,
         lunchEnabled: plannerSettings.lunchEnabled,
       });
-      const { data, error } = await supabase
+
+      const row = plannerSettingsToRow(user.id, plannerSettings);
+
+      let savedData: PlannerSettingsRow | null = null;
+      const modernResult = await supabase
         .from("planner_settings")
-        .upsert(plannerSettingsToRow(user.id, plannerSettings), { onConflict: "user_id" })
+        .upsert(row, { onConflict: "user_id" })
         .select("*")
         .single();
 
-      if (error) throw error;
-      const savedSettings = plannerSettingsFromRow(data);
-      setPlannerSettings({
-        ...savedSettings,
-        dayScheduleEnabled: plannerSettings.dayScheduleEnabled,
-        gapEnabled: plannerSettings.gapEnabled,
-        lunchEnabled: plannerSettings.lunchEnabled,
-      });
-      toast.success(
-        savedSettings.appleIcsUrl.trim()
-          ? "Apple Calendar URL saved. Use the WEBCAL link for live subscription updates."
-          : "Planner settings saved. Copy the WEBCAL link to subscribe in Apple Calendar.",
-      );
+      if (!modernResult.error && modernResult.data) {
+        savedData = modernResult.data;
+      } else if (modernResult.error) {
+        if (isPlannerSettingsAliasUnavailable(modernResult.error)) {
+          const legacyRow = plannerSettingsToLegacyTokenRow(user.id, plannerSettings);
+          const legacyResult = await supabase
+            .from("planner_settings")
+            .upsert(legacyRow, { onConflict: "user_id" })
+            .select("*")
+            .single();
+          if (!legacyResult.error && legacyResult.data) {
+            savedData = legacyResult.data;
+          } else if (legacyResult.error) {
+            throw legacyResult.error;
+          }
+        } else {
+          throw modernResult.error;
+        }
+      }
+
+      if (savedData) {
+        const savedSettings = {
+          ...plannerSettingsFromRow(savedData),
+          dayScheduleEnabled: plannerSettings.dayScheduleEnabled,
+          gapEnabled: plannerSettings.gapEnabled,
+          lunchEnabled: plannerSettings.lunchEnabled,
+        };
+        setPlannerSettings(savedSettings);
+        try {
+          localStorage.setItem(`planner_settings_${user.id}`, JSON.stringify(savedSettings));
+        } catch {}
+        toast.success(
+          savedSettings.appleIcsUrl.trim()
+            ? "Apple Calendar URL saved. Use the WEBCAL link for live subscription updates."
+            : "Planner settings saved successfully!",
+        );
+      } else {
+        try {
+          localStorage.setItem(`planner_settings_${user.id}`, JSON.stringify(plannerSettings));
+        } catch {}
+        toast.success("Planner settings saved successfully!");
+      }
     } catch (error) {
+      console.error("[Planner Settings Save Failed]", error);
+      try {
+        localStorage.setItem(`planner_settings_${user.id}`, JSON.stringify(plannerSettings));
+      } catch {}
       toast.error(error instanceof Error ? error.message : "Planner settings save failed");
     } finally {
       setSettingsSaving(false);
@@ -605,6 +743,10 @@ function PlannerPage() {
                     const task = taskForPlannerSlot(dayTasks, slot, slotIndex);
                     const openSlot = () => {
                       if (task) {
+                        if (isFieldVisitPlannerTask(task)) {
+                          void navigate({ to: "/field-visits" });
+                          return;
+                        }
                         openExisting(task, key, slot.range.split(" - ")[0]);
                       } else {
                         openNew(key, slot.range.split(" - ")[0]);
@@ -702,6 +844,10 @@ function PlannerPage() {
                       const showTask = !!task;
                       const openSlot = () => {
                         if (showTask && task) {
+                          if (isFieldVisitPlannerTask(task)) {
+                            void navigate({ to: "/field-visits" });
+                            return;
+                          }
                           openExisting(task, key, slot.range.split(" - ")[0]);
                         } else {
                           openNew(key, slot.range.split(" - ")[0]);
@@ -727,26 +873,33 @@ function PlannerPage() {
                           }}
                         >
                           <div className="flex items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground">
-                            <span>{slot.range}</span>
+                            <span className="font-semibold text-foreground/85">{slot.range}</span>
+                            {!showTask && slot.label && (
+                              <span className="rounded bg-amber-500/10 px-1 py-0.2 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                                {slot.label}
+                              </span>
+                            )}
                           </div>
                           {showTask && task ? (
                             <div className="relative mt-2 rounded-md bg-primary/20 p-2 pr-9 text-primary">
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className="absolute right-1.5 top-1.5 h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                                aria-label={`Delete meeting ${task.title}`}
-                                title="Delete meeting"
-                                disabled={deletingEventId === task.id}
-                                onClick={(event) => {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  void deletePlannerMeeting(task);
-                                }}
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
+                              {!isFieldVisitPlannerTask(task) && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="absolute right-1.5 top-1.5 h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                  aria-label={`Delete meeting ${task.title}`}
+                                  title="Delete meeting"
+                                  disabled={deletingEventId === task.id}
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    void deletePlannerMeeting(task);
+                                  }}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              )}
                               <div className="flex items-start gap-1.5">
                                 <CalendarDays className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                                 <div className="min-w-0">
@@ -754,9 +907,7 @@ function PlannerPage() {
                                     {task.title}
                                   </p>
                                   <p className="mt-1 text-[11px] text-primary/80">
-                                    {task.status === "blocked"
-                                      ? "Meeting - Cancelled"
-                                      : "Meeting - Confirmed"}
+                                    {plannerTaskKindLabel(task)}
                                   </p>
                                   <p className="text-[11px] text-primary/80">
                                     Time: {task.due_time ? toDisplayTime(task.due_time) : "All day"}
@@ -766,11 +917,23 @@ function PlannerPage() {
                                   </p>
                                 </div>
                               </div>
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                <Badge className="h-5 bg-primary text-primary-foreground hover:bg-primary">
+                                  {isFieldVisitPlannerTask(task) ? "Field Visit" : "WhatsApp"}
+                                </Badge>
+                                {!isFieldVisitPlannerTask(task) && (
+                                  <Badge variant="destructive" className="h-5">
+                                    !
+                                  </Badge>
+                                )}
+                              </div>
                             </div>
                           ) : (
-                            <p className="mt-1 text-[11px] font-medium text-foreground">
-                              {slot.label}
-                            </p>
+                            slot.label ? (
+                              <p className="mt-1 text-[11px] font-medium text-foreground">
+                                {slot.label}
+                              </p>
+                            ) : null
                           )}
                         </div>
                       );
@@ -782,13 +945,17 @@ function PlannerPage() {
                           key={task.id}
                           task={task}
                           deleting={deletingEventId === task.id}
-                          onOpen={() =>
+                          onOpen={() => {
+                            if (isFieldVisitPlannerTask(task)) {
+                              void navigate({ to: "/field-visits" });
+                              return;
+                            }
                             openExisting(
                               task,
                               key,
                               task.due_time ? task.due_time.slice(0, 5) : "10:00",
-                            )
-                          }
+                            );
+                          }}
                           onDelete={deletePlannerMeeting}
                         />
                       ))}
@@ -833,6 +1000,7 @@ function PlannerPage() {
         mode={dialogMode}
         defaultDate={defaultDate}
         defaultTime={defaultTime}
+        defaultDuration={`${plannerSettings.slotMin || 30}m`}
         departments={departments.map((department) => department.name)}
         onSaved={refreshTasks}
       />
@@ -916,6 +1084,7 @@ function PlannerSlotCard({
   onOpen: () => void;
   onDelete: (task: Task) => void | Promise<void>;
 }) {
+  const fieldVisitTask = task ? isFieldVisitPlannerTask(task) : false;
   return (
     <div
       role="button"
@@ -934,26 +1103,33 @@ function PlannerSlotCard({
       }}
     >
       <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground">
-        <span>{slot.range}</span>
+        <span className="font-semibold text-foreground/85">{slot.range}</span>
+        {!task && slot.label && (
+          <span className="rounded bg-amber-500/10 px-1 py-0.2 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+            {slot.label}
+          </span>
+        )}
       </div>
       {task ? (
         <div className="relative mt-2 rounded-md bg-primary/20 p-2 pr-9 text-primary">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="absolute right-1.5 top-1.5 h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
-            aria-label={`Delete meeting ${task.title}`}
-            title="Delete meeting"
-            disabled={deleting}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              void onDelete(task);
-            }}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
+          {!fieldVisitTask && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="absolute right-1.5 top-1.5 h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+              aria-label={`Delete meeting ${task.title}`}
+              title="Delete meeting"
+              disabled={deleting}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void onDelete(task);
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          )}
           <div className="flex items-start gap-1.5">
             <CalendarDays className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <div className="min-w-0">
@@ -961,7 +1137,7 @@ function PlannerSlotCard({
                 {task.title}
               </p>
               <p className="mt-1 text-[11px] text-primary/80">
-                {task.status === "blocked" ? "Meeting - Cancelled" : "Meeting - Confirmed"}
+                {plannerTaskKindLabel(task)}
               </p>
               <p className="text-[11px] text-primary/80">
                 Time: {task.due_time ? toDisplayTime(task.due_time) : "All day"}
@@ -970,6 +1146,16 @@ function PlannerSlotCard({
                 {task.department || "Governance Department"}
               </p>
             </div>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1">
+            <Badge className="h-5 bg-primary text-primary-foreground hover:bg-primary">
+              {fieldVisitTask ? "Field Visit" : "WhatsApp"}
+            </Badge>
+            {!fieldVisitTask && (
+              <Badge variant="destructive" className="h-5">
+                !
+              </Badge>
+            )}
           </div>
         </div>
       ) : (
@@ -1063,9 +1249,30 @@ function PlannerSettingsPanel({
             <PlannerSettingInput
               label="Slot (Min)"
               type="number"
+              min={5}
+              max={240}
+              step={5}
               value={settings.slotMin}
               onChange={(value) => update("slotMin", value)}
-            />
+            >
+              <div className="flex flex-wrap gap-1 pt-1">
+                {["15", "30", "45", "60"].map((mins) => (
+                  <button
+                    key={mins}
+                    type="button"
+                    onClick={() => update("slotMin", mins)}
+                    className={cn(
+                      "rounded px-2 py-0.5 text-[11px] font-medium border transition-colors",
+                      settings.slotMin === mins
+                        ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                        : "bg-muted/60 text-muted-foreground hover:bg-muted border-border/60",
+                    )}
+                  >
+                    {mins}m
+                  </button>
+                ))}
+              </div>
+            </PlannerSettingInput>
           </div>
         )}
       </div>
@@ -1106,9 +1313,30 @@ function PlannerSettingsPanel({
                 <PlannerSettingInput
                   label="Gap (Min)"
                   type="number"
+                  min={0}
+                  max={120}
+                  step={5}
                   value={settings.gapMin}
                   onChange={(value) => update("gapMin", value)}
-                />
+                >
+                  <div className="flex flex-wrap gap-1 pt-1">
+                    {["0", "10", "15", "20"].map((mins) => (
+                      <button
+                        key={mins}
+                        type="button"
+                        onClick={() => update("gapMin", mins)}
+                        className={cn(
+                          "rounded px-2 py-0.5 text-[11px] font-medium border transition-colors",
+                          settings.gapMin === mins
+                            ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                            : "bg-muted/60 text-muted-foreground hover:bg-muted border-border/60",
+                        )}
+                      >
+                        {mins === "0" ? "0m" : `${mins}m`}
+                      </button>
+                    ))}
+                  </div>
+                </PlannerSettingInput>
               </div>
             )}
           </div>
@@ -1273,11 +1501,21 @@ function PlannerSettingInput({
   label,
   value,
   type = "text",
+  min,
+  max,
+  step,
+  placeholder,
+  children,
   onChange,
 }: {
   label: string;
   value: string;
   type?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  placeholder?: string;
+  children?: ReactNode;
   onChange: (value: string) => void;
 }) {
   return (
@@ -1285,10 +1523,15 @@ function PlannerSettingInput({
       <FieldLabel>{label}</FieldLabel>
       <Input
         type={type}
+        min={min}
+        max={max}
+        step={step}
+        placeholder={placeholder}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className="min-w-0 bg-background"
       />
+      {children}
     </div>
   );
 }
@@ -1300,6 +1543,7 @@ function EventDialog({
   mode,
   defaultDate,
   defaultTime,
+  defaultDuration = "30m",
   departments,
   onSaved,
 }: {
@@ -1309,6 +1553,7 @@ function EventDialog({
   mode: PlannerDialogMode;
   defaultDate: string | null;
   defaultTime: string;
+  defaultDuration?: string;
   departments: string[];
   onSaved: () => void | Promise<void>;
 }) {
@@ -1319,7 +1564,7 @@ function EventDialog({
     title: "",
     date: "",
     time: "10:00 AM",
-    duration: "30m",
+    duration: defaultDuration,
     status: "Confirmed",
     color: eventColors[0],
     department: "None",
@@ -1341,7 +1586,7 @@ function EventDialog({
           title: event.title ?? "",
           date: event.scheduled_date ?? defaultDate ?? format(new Date(), "yyyy-MM-dd"),
           time: toTimeInput(getEventTime(event.due_time, defaultTime)),
-          duration: extractDescriptionField(event.description, "Duration") ?? "30m",
+          duration: extractDescriptionField(event.description, "Duration") ?? defaultDuration,
           status: extractDescriptionField(event.description, "Status") ?? "Confirmed",
           color: extractColor(event.description),
           department: event.department ?? "None",
@@ -1354,7 +1599,7 @@ function EventDialog({
           title: "",
           date: defaultDate ?? format(new Date(), "yyyy-MM-dd"),
           time: toTimeInput(defaultTime),
-          duration: "30m",
+          duration: defaultDuration,
           status: "Confirmed",
           color: eventColors[0],
           department: "None",
@@ -1364,7 +1609,7 @@ function EventDialog({
         });
       }
     }
-  }, [event, defaultDate, defaultTime, open]);
+  }, [event, defaultDate, defaultTime, defaultDuration, open]);
 
   const submit = async (submitEvent: React.FormEvent<HTMLFormElement>) => {
     submitEvent.preventDefault();
@@ -1600,10 +1845,22 @@ function EventDialog({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="15m">15m</SelectItem>
+                    <SelectItem value="20m">20m</SelectItem>
                     <SelectItem value="30m">30m</SelectItem>
                     <SelectItem value="45m">45m</SelectItem>
                     <SelectItem value="1h">1h</SelectItem>
+                    <SelectItem value="1.5h">1.5h</SelectItem>
                     <SelectItem value="2h">2h</SelectItem>
+                    {Boolean(
+                      defaultDuration &&
+                        !["15m", "20m", "30m", "45m", "1h", "1.5h", "2h"].includes(
+                          defaultDuration,
+                        ),
+                    ) && (
+                      <SelectItem value={defaultDuration}>
+                        {defaultDuration} (Default Slot)
+                      </SelectItem>
+                    )}
                   </SelectContent>
                 </Select>
               </div>
@@ -1775,6 +2032,19 @@ function normalizeDayEndTime(dayEnd: string, dayStart: string): string {
   return dayEnd;
 }
 
+type FieldVisitPlannerClient = {
+  from(table: "field_visit_plans"): {
+    select: (columns: string) => {
+      order: (
+        column: string,
+        options?: { ascending?: boolean },
+      ) => {
+        limit: (count: number) => PromiseLike<{ data: FieldVisitPlannerPlan[] | null; error: Error | null }>;
+      };
+    };
+  };
+};
+
 function plannerSettingsFromRow(row: PlannerSettingsRow): PlannerSettings {
   const dayStart = timeInputValue(row.day_start);
   const dayEnd = normalizeDayEndTime(timeInputValue(row.day_end), dayStart);
@@ -1793,19 +2063,68 @@ function plannerSettingsFromRow(row: PlannerSettingsRow): PlannerSettings {
   };
 }
 
+function parseSlotMinutes(value: string | number): number {
+  if (typeof value === "number") return Math.max(5, Math.min(240, value));
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return 30;
+
+  if (raw.includes(":")) {
+    const [h = "0", m = "0"] = raw.split(":");
+    const total = Number(h) * 60 + Number(m);
+    if (Number.isFinite(total) && total >= 5 && total <= 240) return total;
+  }
+
+  const hourMatch = raw.match(/^(\d+(?:\.\d+)?)\s*(?:h|hr|hour|hours)$/);
+  if (hourMatch) {
+    const mins = Math.round(Number(hourMatch[1]) * 60);
+    if (mins >= 5 && mins <= 240) return mins;
+  }
+
+  const minMatch = raw.match(/^(\d+)/);
+  if (minMatch) {
+    const mins = Number(minMatch[1]);
+    if (mins >= 5 && mins <= 240) return mins;
+  }
+
+  return 30;
+}
+
+function parseGapMinutes(value: string | number): number {
+  if (typeof value === "number") return Math.max(0, Math.min(120, value));
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw || raw === "0" || raw === "none" || raw === "no") return 0;
+
+  if (raw.includes(":")) {
+    const [h = "0", m = "0"] = raw.split(":");
+    const total = Number(h) * 60 + Number(m);
+    if (Number.isFinite(total) && total >= 0 && total <= 120) return total;
+  }
+
+  const minMatch = raw.match(/^(\d+)/);
+  if (minMatch) {
+    const mins = Number(minMatch[1]);
+    if (mins >= 0 && mins <= 120) return mins;
+  }
+
+  return 0;
+}
+
 function plannerSettingsToRow(userId: string, settings: PlannerSettings) {
   const token = settings.token || createPlannerToken();
   const dayStart = settings.dayStart || defaultPlannerSettings.dayStart;
   const dayEnd = normalizeDayEndTime(settings.dayEnd || defaultPlannerSettings.dayEnd, dayStart);
+  const parsedSlot = parseSlotMinutes(settings.slotMin);
+  const parsedGap = parseGapMinutes(settings.gapMin);
   return {
     user_id: userId,
+    owner_user_id: userId,
     day_start: dayStart,
     day_end: dayEnd,
-    slot_min: Number(settings.slotMin) || Number(defaultPlannerSettings.slotMin),
-    gap_min: Number(settings.gapMin) || Number(defaultPlannerSettings.gapMin),
+    slot_min: parsedSlot,
+    gap_min: parsedGap,
     lunch_start: settings.lunchStart || defaultPlannerSettings.lunchStart,
     lunch_end: settings.lunchEnd || defaultPlannerSettings.lunchEnd,
-    apple_ics_url: settings.appleIcsUrl,
+    apple_ics_url: settings.appleIcsUrl || "",
     subscription_token: token,
     ics_token: token,
   };
@@ -1854,7 +2173,7 @@ async function rotatePlannerTokenFallback(userId: string, settings: PlannerSetti
 
 function isPlannerSettingsAliasUnavailable(error: { message?: string; code?: string } | null) {
   const message = error?.message ?? "";
-  return /ics_token/i.test(message) || /schema cache/i.test(message);
+  return /ics_token/i.test(message) || /schema cache/i.test(message) || /owner_user_id/i.test(message);
 }
 
 function timeInputValue(value: string) {
@@ -1881,8 +2200,8 @@ function buildPlannerSlots(
     return [];
   }
   const slots: PlannerSlot[] = [];
-  const slotMin = Math.max(5, Number(settings.slotMin) || 30);
-  const gapMin = settings.gapEnabled ? Math.max(0, Number(settings.gapMin) || 0) : 0;
+  const slotMin = parseSlotMinutes(settings.slotMin);
+  const gapMin = settings.gapEnabled ? parseGapMinutes(settings.gapMin) : 0;
   const dayKeys = new Set(days.map((day) => format(day, "yyyy-MM-dd")));
   const taskTimes = tasks
     .filter((task) => {
@@ -1891,6 +2210,7 @@ function buildPlannerSlots(
     })
     .map((task) => normalizeTaskTimeMinutes(task.due_time))
     .filter((time): time is number => time !== null);
+
   const configuredStart = minutesFromTime(settings.dayStart);
   let configuredEnd = minutesFromTime(settings.dayEnd);
   if (configuredEnd <= configuredStart && configuredEnd < 12 * 60 && configuredEnd + 720 > configuredStart) {
@@ -1899,10 +2219,17 @@ function buildPlannerSlots(
   if (configuredEnd <= configuredStart) {
     configuredEnd = Math.max(configuredStart + 8 * 60, 18 * 60);
   }
-  const earliestTask = taskTimes.length ? Math.min(...taskTimes) : configuredStart;
-  const latestTask = taskTimes.length ? Math.max(...taskTimes) + slotMin : configuredEnd;
-  let cursor = Math.max(0, Math.min(configuredStart, roundDownMinutes(earliestTask, slotMin)));
-  const end = Math.min(24 * 60, Math.max(configuredEnd, roundUpMinutes(latestTask, slotMin)));
+
+  // If there are meetings scheduled earlier than configuredStart, start earlier; otherwise start at configuredStart
+  const start = taskTimes.length && Math.min(...taskTimes) < configuredStart
+    ? Math.max(0, roundDownMinutes(Math.min(...taskTimes), slotMin))
+    : configuredStart;
+
+  // If there are meetings scheduled later than configuredEnd, extend end; otherwise end at configuredEnd
+  const latestTaskEnd = taskTimes.length ? Math.max(...taskTimes) + slotMin : configuredEnd;
+  const end = Math.min(24 * 60, Math.max(configuredEnd, roundUpMinutes(latestTaskEnd, slotMin)));
+
+  let cursor = start;
   const lunchEnabled = Boolean(settings.lunchEnabled);
   const lunchStart = lunchEnabled ? minutesFromTime(settings.lunchStart) : -1;
   const lunchEnd = lunchEnabled ? minutesFromTime(settings.lunchEnd) : -1;
@@ -1919,6 +2246,12 @@ function buildPlannerSlots(
     }
 
     if (lunchEnabled && cursor < lunchStart && cursor + slotMin > lunchStart) {
+      if (lunchStart > cursor) {
+        slots.push({
+          range: `${timeFromMinutes(cursor)} - ${timeFromMinutes(lunchStart)}`,
+          label: null,
+        });
+      }
       cursor = lunchStart;
       continue;
     }
@@ -2000,6 +2333,68 @@ function validateAppleCalendarUrl(value: string) {
     throw new Error(
       "Apple Calendar URL is invalid. Leave it blank or paste a valid HTTPS/WEBCAL URL.",
     );
+  }
+}
+
+function fieldVisitPlanToPlannerTask(plan: FieldVisitPlannerPlan): Task {
+  const meta = parseFieldVisitPlanNotes(plan.notes);
+  const dueTime = toTimeInput(meta.time) || "10:00";
+  return {
+    id: `field-visit-plan-${plan.id}`,
+    title: plan.title,
+    description: [
+      "Type: Field Visit",
+      meta.notes,
+      `${plan.field_visit_plan_items?.length ?? 0} GP row${(plan.field_visit_plan_items?.length ?? 0) === 1 ? "" : "s"}`,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    status: plan.status === "completed" ? "done" : plan.status === "draft" ? "todo" : "in_progress",
+    priority: "high",
+    department: `Field Visits${meta.duration ? ` - ${meta.duration}` : ""}`,
+    scheduled_date: plan.plan_date,
+    due_date: plan.plan_date,
+    due_time: dueTime,
+    assignee_id: plan.owner_id,
+    created_by: plan.owner_id,
+    created_at: plan.created_at,
+    updated_at: plan.updated_at,
+    calendar_sync_enabled: false,
+  } as Task;
+}
+
+function isFieldVisitPlannerTask(task: Task) {
+  return task.id.startsWith("field-visit-plan-");
+}
+
+function isMissingFieldVisitSchemaError(error: Error) {
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("schema cache") &&
+    (message.includes("field_visit_plans") || message.includes("field_visit_plan_items"))
+  );
+}
+
+function plannerTaskKindLabel(task: Task) {
+  if (isFieldVisitPlannerTask(task)) {
+    if (task.status === "done") return "Field Visit - Completed";
+    if (task.status === "todo") return "Field Visit - Draft";
+    return "Field Visit - Scheduled";
+  }
+  return task.status === "blocked" ? "Meeting - Cancelled" : "Meeting - Confirmed";
+}
+
+function parseFieldVisitPlanNotes(value: string | null) {
+  if (!value) return { time: "", duration: "", notes: "" };
+  try {
+    const parsed = JSON.parse(value) as Partial<Record<"time" | "duration" | "notes", string>>;
+    return {
+      time: parsed.time ?? "",
+      duration: parsed.duration ?? "",
+      notes: parsed.notes ?? "",
+    };
+  } catch {
+    return { time: "", duration: "", notes: value };
   }
 }
 

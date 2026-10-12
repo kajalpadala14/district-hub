@@ -13,7 +13,7 @@ import {
   formatFiveMinReminder,
   formatTimeRange,
 } from "../telegram/formatters.js";
-import { sendTelegramMessage } from "../telegram/telegramService.js";
+import { sendTelegramMessageDetailed } from "../telegram/telegramService.js";
 import { setLastReminderCheckTimestamp } from "../scheduler/scheduler.js";
 
 /**
@@ -28,146 +28,362 @@ import { setLastReminderCheckTimestamp } from "../scheduler/scheduler.js";
 export async function runReminderJob() {
   const timeZone = env.timezone || "Asia/Kolkata";
   const todayStr = getTodayDateString(timeZone);
+  const now = new Date();
+  const timestampIso = now.toISOString();
+  const timestampLocal = formatLocalTimestamp(now, timeZone);
+
+  let meetingsChecked = 0;
+  let remindersSent = 0;
+  let remindersSkipped = 0;
+  const skipReasons = [];
+  const telegramResponses = [];
 
   try {
-    setLastReminderCheckTimestamp(new Date().toISOString());
+    setLastReminderCheckTimestamp(timestampIso);
 
     // Fetch upcoming meetings from planner_events table
     const meetings = await getUpcomingMeetings(todayStr);
+    meetingsChecked = meetings.length;
+
+    if (meetingsChecked === 0) {
+      skipReasons.push({
+        type: "no_meetings",
+        details: `No upcoming meetings found in database for today (${todayStr})`,
+      });
+    }
 
     for (const meeting of meetings) {
+      const meetingId = meeting.id;
+      const title = meeting.title || "Untitled Meeting";
+
+      // 1. Cancelled meetings
       if (meeting.status === "cancelled") {
-        await handleCancelledMeeting(meeting);
+        const cancelKey = `cancelled_${meeting.updated_at}`;
+        const alreadySent = await hasReminderBeenSent(meetingId, "cancelled", cancelKey);
+
+        if (alreadySent) {
+          remindersSkipped++;
+          skipReasons.push({
+            meetingId,
+            title,
+            reason: "cancelled_already_notified",
+            details: `Cancellation notice already delivered previously (key: ${cancelKey})`,
+          });
+        } else {
+          const text = formatMeetingCancelled(meeting);
+          const apiResult = await sendTelegramMessageDetailed(text, { type: "cancellation" });
+          telegramResponses.push({
+            meetingId,
+            title,
+            action: "cancellation_notice",
+            result: apiResult,
+          });
+
+          if (apiResult.success) {
+            await logReminderSent(meetingId, "cancelled", cancelKey, {
+              title: meeting.title,
+              cancelled_at: meeting.updated_at,
+            });
+            remindersSent++;
+            console.log(`[ReminderJob] [Cancellation Sent] Delivered cancelled meeting for "${meeting.title}" (${meetingId})`);
+          } else {
+            remindersSkipped++;
+            skipReasons.push({
+              meetingId,
+              title,
+              reason: "telegram_api_failed",
+              details: `Telegram delivery failed: ${apiResult.reason || "Unknown error"}`,
+            });
+          }
+        }
         continue;
       }
 
+      // 2. All day or missing start time
       if (!meeting.start_time || meeting.is_all_day) {
         await trackMeetingState(meeting);
+        remindersSkipped++;
+        skipReasons.push({
+          meetingId,
+          title,
+          reason: meeting.is_all_day ? "all_day_meeting" : "no_start_time",
+          details: meeting.is_all_day ? "All-day event (no specific start time)" : "Meeting start_time is missing",
+        });
         continue;
       }
 
+      // 3. Active meeting with start time
       const meetingStartMs = parseMeetingStartToMs(meeting.date, meeting.start_time, timeZone);
       const nowMs = Date.now();
       const diffMinutes = (meetingStartMs - nowMs) / (1000 * 60);
 
       // Check if meeting time or date was updated
-      await handleRescheduledMeeting(meeting);
+      let rescheduledAttempted = false;
+      const lastStateLog = await getLastReminderLog(meetingId, "state_snapshot");
+      if (lastStateLog && lastStateLog.payload) {
+        const prev = lastStateLog.payload;
+        const dateChanged = prev.date && prev.date !== meeting.date;
+        const timeChanged = prev.start_time && prev.start_time !== meeting.start_time;
+
+        if (dateChanged || timeChanged) {
+          const updateKey = `update_${meeting.updated_at}`;
+          const alreadySent = await hasReminderBeenSent(meetingId, "updated", updateKey);
+
+          if (!alreadySent) {
+            rescheduledAttempted = true;
+            const oldTimeRange = formatTimeRange(prev.start_time, prev.end_time);
+            const newTimeRange = formatTimeRange(meeting.start_time, meeting.end_time);
+            const text = formatMeetingUpdated(meeting, oldTimeRange, newTimeRange);
+            const apiResult = await sendTelegramMessageDetailed(text, { type: "update" });
+
+            telegramResponses.push({
+              meetingId,
+              title,
+              action: "reschedule_notice",
+              result: apiResult,
+            });
+
+            if (apiResult.success) {
+              await logReminderSent(meetingId, "updated", updateKey, {
+                old_time: prev.start_time,
+                new_time: meeting.start_time,
+                old_date: prev.date,
+                new_date: meeting.date,
+                updated_at: meeting.updated_at,
+              });
+              remindersSent++;
+              console.log(`[ReminderJob] [Update Sent] Delivered meeting reschedule for "${meeting.title}" (${meetingId})`);
+            } else {
+              remindersSkipped++;
+              skipReasons.push({
+                meetingId,
+                title,
+                reason: "telegram_api_failed",
+                details: `Telegram delivery failed: ${apiResult.reason || "Unknown error"}`,
+              });
+            }
+          }
+        }
+      }
+
+      let reminderAttempted = false;
 
       // 1-Hour Reminder Window (15 to 65 minutes before start)
       if (diffMinutes > 15 && diffMinutes <= 65) {
-        await handleOneHourReminder(meeting);
+        reminderAttempted = true;
+        const slotKey = `${meeting.date}_${meeting.start_time}`;
+        const alreadySent = await hasReminderBeenSent(meetingId, "1_hour", slotKey);
+
+        if (alreadySent) {
+          remindersSkipped++;
+          skipReasons.push({
+            meetingId,
+            title,
+            reason: "already_sent",
+            details: `1-hour reminder already sent for slot ${slotKey}`,
+          });
+        } else {
+          const { text, reply_markup } = formatOneHourReminder(meeting);
+          const apiResult = await sendTelegramMessageDetailed(text, { type: "reminder", reply_markup });
+
+          telegramResponses.push({
+            meetingId,
+            title,
+            action: "1_hour_reminder",
+            result: apiResult,
+          });
+
+          if (apiResult.success) {
+            await logReminderSent(meetingId, "1_hour", slotKey, {
+              title: meeting.title,
+              start_time: meeting.start_time,
+              end_time: meeting.end_time,
+              date: meeting.date,
+            });
+            remindersSent++;
+            console.log(`[ReminderJob] [Reminder Sent] 1-hour reminder delivered for "${meeting.title}" (${meetingId})`);
+          } else {
+            remindersSkipped++;
+            skipReasons.push({
+              meetingId,
+              title,
+              reason: "telegram_api_failed",
+              details: `Telegram delivery failed: ${apiResult.reason || "Unknown error"}`,
+            });
+          }
+        }
       }
 
       // 10-Minute Reminder Window (5 to 15 minutes before start)
-      if (diffMinutes > 5 && diffMinutes <= 15) {
-        await handleTenMinReminder(meeting);
+      else if (diffMinutes > 5 && diffMinutes <= 15) {
+        reminderAttempted = true;
+        const slotKey = `${meeting.date}_${meeting.start_time}`;
+        const alreadySent = await hasReminderBeenSent(meetingId, "10_min", slotKey);
+
+        if (alreadySent) {
+          remindersSkipped++;
+          skipReasons.push({
+            meetingId,
+            title,
+            reason: "already_sent",
+            details: `10-minute reminder already sent for slot ${slotKey}`,
+          });
+        } else {
+          const { text, reply_markup } = formatTenMinReminder(meeting);
+          const apiResult = await sendTelegramMessageDetailed(text, { type: "reminder", reply_markup });
+
+          telegramResponses.push({
+            meetingId,
+            title,
+            action: "10_min_reminder",
+            result: apiResult,
+          });
+
+          if (apiResult.success) {
+            await logReminderSent(meetingId, "10_min", slotKey, {
+              title: meeting.title,
+              start_time: meeting.start_time,
+              end_time: meeting.end_time,
+              date: meeting.date,
+            });
+            remindersSent++;
+            console.log(`[ReminderJob] [Reminder Sent] 10-minute reminder delivered for "${meeting.title}" (${meetingId})`);
+          } else {
+            remindersSkipped++;
+            skipReasons.push({
+              meetingId,
+              title,
+              reason: "telegram_api_failed",
+              details: `Telegram delivery failed: ${apiResult.reason || "Unknown error"}`,
+            });
+          }
+        }
       }
 
       // 5-Minute Reminder Window (0 to 5 minutes before start)
-      if (diffMinutes > 0 && diffMinutes <= 5) {
-        await handleFiveMinReminder(meeting);
+      else if (diffMinutes > 0 && diffMinutes <= 5) {
+        reminderAttempted = true;
+        const slotKey = `${meeting.date}_${meeting.start_time}`;
+        const alreadySent = await hasReminderBeenSent(meetingId, "5_min", slotKey);
+
+        if (alreadySent) {
+          remindersSkipped++;
+          skipReasons.push({
+            meetingId,
+            title,
+            reason: "already_sent",
+            details: `5-minute reminder already sent for slot ${slotKey}`,
+          });
+        } else {
+          const { text, reply_markup } = formatFiveMinReminder(meeting);
+          const apiResult = await sendTelegramMessageDetailed(text, { type: "reminder", reply_markup });
+
+          telegramResponses.push({
+            meetingId,
+            title,
+            action: "5_min_reminder",
+            result: apiResult,
+          });
+
+          if (apiResult.success) {
+            await logReminderSent(meetingId, "5_min", slotKey, {
+              title: meeting.title,
+              start_time: meeting.start_time,
+              end_time: meeting.end_time,
+              date: meeting.date,
+            });
+            remindersSent++;
+            console.log(`[ReminderJob] [Reminder Sent] 5-minute reminder delivered for "${meeting.title}" (${meetingId})`);
+          } else {
+            remindersSkipped++;
+            skipReasons.push({
+              meetingId,
+              title,
+              reason: "telegram_api_failed",
+              details: `Telegram delivery failed: ${apiResult.reason || "Unknown error"}`,
+            });
+          }
+        }
+      }
+
+      // If not in any reminder window and no reschedule action taken
+      if (!reminderAttempted && !rescheduledAttempted) {
+        remindersSkipped++;
+        const roundedDiff = Math.round(diffMinutes);
+        const details = diffMinutes > 0
+          ? `Starts in ${roundedDiff} mins (${meeting.start_time} ${timeZone}) - Outside reminder windows (1h: 15-65m, 10m: 5-15m, 5m: 0-5m)`
+          : `Meeting start time passed ${Math.abs(roundedDiff)} mins ago (${meeting.start_time} ${timeZone})`;
+
+        skipReasons.push({
+          meetingId,
+          title,
+          reason: "not_in_time_window",
+          details,
+        });
       }
 
       await trackMeetingState(meeting);
     }
   } catch (error) {
     console.error("[ReminderJob] [Telegram API Errors] Error during reminder job run:", error);
-  }
-}
-
-async function handleOneHourReminder(meeting) {
-  const slotKey = `${meeting.date}_${meeting.start_time}`;
-  const alreadySent = await hasReminderBeenSent(meeting.id, "1_hour", slotKey);
-
-  if (alreadySent) return;
-
-  const { text, reply_markup } = formatOneHourReminder(meeting);
-  const sent = await sendTelegramMessage(text, { type: "reminder", reply_markup });
-
-  if (sent) {
-    await logReminderSent(meeting.id, "1_hour", slotKey, {
-      title: meeting.title,
-      start_time: meeting.start_time,
-      end_time: meeting.end_time,
-      date: meeting.date,
+    skipReasons.push({
+      type: "execution_error",
+      details: error.message || String(error),
     });
-    console.log(`[ReminderJob] [Reminder Sent] 1-hour reminder delivered for "${meeting.title}" (${meeting.id})`);
   }
+
+  // Output detailed execution summary log
+  printExecutionSummary({
+    timestampIso,
+    timestampLocal,
+    meetingsChecked,
+    remindersSent,
+    remindersSkipped,
+    skipReasons,
+    telegramResponses,
+  });
 }
 
-async function handleTenMinReminder(meeting) {
-  const slotKey = `${meeting.date}_${meeting.start_time}`;
-  const alreadySent = await hasReminderBeenSent(meeting.id, "10_min", slotKey);
+function printExecutionSummary({
+  timestampIso,
+  timestampLocal,
+  meetingsChecked,
+  remindersSent,
+  remindersSkipped,
+  skipReasons,
+  telegramResponses,
+}) {
+  console.log(`\n[ReminderJob] [${timestampIso}] --- Cron Execution Run ---`);
+  console.log(`  - Timestamp: ${timestampIso} (Local: ${timestampLocal})`);
+  console.log(`  - Meetings Checked: ${meetingsChecked}`);
+  console.log(`  - Reminders Sent: ${remindersSent}`);
+  console.log(`  - Reminders Skipped: ${remindersSkipped}`);
 
-  if (alreadySent) return;
-
-  const { text, reply_markup } = formatTenMinReminder(meeting);
-  const sent = await sendTelegramMessage(text, { type: "reminder", reply_markup });
-
-  if (sent) {
-    await logReminderSent(meeting.id, "10_min", slotKey, {
-      title: meeting.title,
-      start_time: meeting.start_time,
-      end_time: meeting.end_time,
-      date: meeting.date,
-    });
-    console.log(`[ReminderJob] [Reminder Sent] 10-minute reminder delivered for "${meeting.title}" (${meeting.id})`);
-  }
-}
-
-async function handleFiveMinReminder(meeting) {
-  const slotKey = `${meeting.date}_${meeting.start_time}`;
-  const alreadySent = await hasReminderBeenSent(meeting.id, "5_min", slotKey);
-
-  if (alreadySent) return;
-
-  const { text, reply_markup } = formatFiveMinReminder(meeting);
-  const sent = await sendTelegramMessage(text, { type: "reminder", reply_markup });
-
-  if (sent) {
-    await logReminderSent(meeting.id, "5_min", slotKey, {
-      title: meeting.title,
-      start_time: meeting.start_time,
-      end_time: meeting.end_time,
-      date: meeting.date,
-    });
-    console.log(`[ReminderJob] [Reminder Sent] 5-minute reminder delivered for "${meeting.title}" (${meeting.id})`);
-  }
-}
-
-async function handleRescheduledMeeting(meeting) {
-  const lastStateLog = await getLastReminderLog(meeting.id, "state_snapshot");
-
-  if (!lastStateLog || !lastStateLog.payload) return;
-
-  const prev = lastStateLog.payload;
-
-  const dateChanged = prev.date && prev.date !== meeting.date;
-  const timeChanged = prev.start_time && prev.start_time !== meeting.start_time;
-
-  if (dateChanged || timeChanged) {
-    const updateKey = `update_${meeting.updated_at}`;
-    const alreadySent = await hasReminderBeenSent(meeting.id, "updated", updateKey);
-
-    if (!alreadySent) {
-      const oldTimeRange = formatTimeRange(prev.start_time, prev.end_time);
-      const newTimeRange = formatTimeRange(meeting.start_time, meeting.end_time);
-
-      const text = formatMeetingUpdated(meeting, oldTimeRange, newTimeRange);
-      const sent = await sendTelegramMessage(text, { type: "update" });
-
-      if (sent) {
-        await logReminderSent(meeting.id, "updated", updateKey, {
-          old_time: prev.start_time,
-          new_time: meeting.start_time,
-          old_date: prev.date,
-          new_date: meeting.date,
-          updated_at: meeting.updated_at,
-        });
-        console.log(`[ReminderJob] [Update Sent] Delivered meeting reschedule for "${meeting.title}" (${meeting.id})`);
+  if (skipReasons.length > 0) {
+    console.log(`  - Skip Reasons:`);
+    skipReasons.forEach((sr, idx) => {
+      if (sr.title) {
+        console.log(`     ${idx + 1}. "${sr.title}" (ID: ${sr.meetingId}) -> Reason: [${sr.reason}] | ${sr.details}`);
+      } else {
+        console.log(`     ${idx + 1}. [${sr.type || "info"}] ${sr.details}`);
       }
-    }
+    });
+  } else {
+    console.log(`  - Skip Reasons: None`);
   }
+
+  if (telegramResponses.length > 0) {
+    console.log(`  - Telegram API Responses:`);
+    telegramResponses.forEach((tr, idx) => {
+      const res = tr.result;
+      const statusStr = res.success ? `SUCCESS (Msg ID: ${res.messageId})` : `FAILED (Reason: ${res.reason})`;
+      const jsonSnippet = res.response ? JSON.stringify(res.response) : "N/A";
+      console.log(`     ${idx + 1}. [${tr.action}] "${tr.title}" (ID: ${tr.meetingId}) -> Status: ${statusStr} | Chat ID: ${res.chatId || "N/A"} | Response: ${jsonSnippet}`);
+    });
+  } else {
+    console.log(`  - Telegram API Response: N/A (No messages attempted)`);
+  }
+  console.log(`---------------------------------------------------------\n`);
 }
 
 async function handleCancelledMeeting(meeting) {
@@ -177,9 +393,9 @@ async function handleCancelledMeeting(meeting) {
   if (alreadySent) return;
 
   const text = formatMeetingCancelled(meeting);
-  const sent = await sendTelegramMessage(text, { type: "cancellation" });
+  const sent = await sendTelegramMessageDetailed(text, { type: "cancellation" });
 
-  if (sent) {
+  if (sent.success) {
     await logReminderSent(meeting.id, "cancelled", cancelKey, {
       title: meeting.title,
       cancelled_at: meeting.updated_at,
@@ -240,4 +456,21 @@ function getTodayDateString(timeZone = "Asia/Kolkata") {
   const options = { timeZone, year: "numeric", month: "2-digit", day: "2-digit" };
   const formatter = new Intl.DateTimeFormat("en-CA", options);
   return formatter.format(new Date());
+}
+
+function formatLocalTimestamp(dateObj, timeZone = "Asia/Kolkata") {
+  try {
+    return new Intl.DateTimeFormat("en-IN", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(dateObj);
+  } catch {
+    return dateObj.toLocaleString();
+  }
 }
