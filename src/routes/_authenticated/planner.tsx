@@ -727,9 +727,17 @@ function PlannerPage() {
                         }}
                       >
                         <div className="flex items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground">
-                          <span>{slot.range}</span>
+                          <span className="font-semibold text-foreground/85">{slot.range}</span>
                           {!showTask && (
-                            <span className="text-muted-foreground/45">Draft Slot</span>
+                            <span
+                              className={cn(
+                                slot.label
+                                  ? "rounded bg-amber-500/10 px-1 py-0.2 text-[10px] font-semibold text-amber-600 dark:text-amber-400"
+                                  : "text-muted-foreground/45",
+                              )}
+                            >
+                              {slot.label ?? "Draft Slot"}
+                            </span>
                           )}
                         </div>
                         {showTask && task ? (
@@ -803,6 +811,7 @@ function PlannerPage() {
         mode={dialogMode}
         defaultDate={defaultDate}
         defaultTime={defaultTime}
+        defaultDuration={`${plannerSettings.slotMin || 30}m`}
         departments={departments.map((department) => department.name)}
         onSaved={refreshTasks}
       />
@@ -842,8 +851,18 @@ function PlannerSlotCard({
       }}
     >
       <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground">
-        <span>{slot.range}</span>
-        {!task && <span className="text-muted-foreground/45">Draft Slot</span>}
+        <span className="font-semibold text-foreground/85">{slot.range}</span>
+        {!task && (
+          <span
+            className={cn(
+              slot.label
+                ? "rounded bg-amber-500/10 px-1 py-0.2 text-[10px] font-semibold text-amber-600 dark:text-amber-400"
+                : "text-muted-foreground/45",
+            )}
+          >
+            {slot.label ?? "Draft Slot"}
+          </span>
+        )}
       </div>
       {task ? (
         <div className="relative mt-2 rounded-md bg-primary/20 p-2 pr-9 text-primary">
@@ -944,15 +963,57 @@ function PlannerSettingsPanel({
         <PlannerSettingInput
           label="Slot (Min)"
           type="number"
+          min={5}
+          max={240}
+          step={5}
           value={settings.slotMin}
           onChange={(value) => update("slotMin", value)}
-        />
+        >
+          <div className="flex flex-wrap gap-1 pt-1">
+            {["15", "30", "45", "60"].map((mins) => (
+              <button
+                key={mins}
+                type="button"
+                onClick={() => update("slotMin", mins)}
+                className={cn(
+                  "rounded px-2 py-0.5 text-[11px] font-medium border transition-colors",
+                  settings.slotMin === mins
+                    ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                    : "bg-muted/60 text-muted-foreground hover:bg-muted border-border/60",
+                )}
+              >
+                {mins}m
+              </button>
+            ))}
+          </div>
+        </PlannerSettingInput>
         <PlannerSettingInput
           label="Gap (Min)"
           type="number"
+          min={0}
+          max={120}
+          step={5}
           value={settings.gapMin}
           onChange={(value) => update("gapMin", value)}
-        />
+        >
+          <div className="flex flex-wrap gap-1 pt-1">
+            {["0", "10", "15", "20"].map((mins) => (
+              <button
+                key={mins}
+                type="button"
+                onClick={() => update("gapMin", mins)}
+                className={cn(
+                  "rounded px-2 py-0.5 text-[11px] font-medium border transition-colors",
+                  settings.gapMin === mins
+                    ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                    : "bg-muted/60 text-muted-foreground hover:bg-muted border-border/60",
+                )}
+              >
+                {mins === "0" ? "0m" : `${mins}m`}
+              </button>
+            ))}
+          </div>
+        </PlannerSettingInput>
         <PlannerSettingInput
           label="Lunch Start"
           type="time"
@@ -1075,11 +1136,21 @@ function PlannerSettingInput({
   label,
   value,
   type = "text",
+  min,
+  max,
+  step,
+  placeholder,
+  children,
   onChange,
 }: {
   label: string;
   value: string;
   type?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  placeholder?: string;
+  children?: ReactNode;
   onChange: (value: string) => void;
 }) {
   return (
@@ -1087,10 +1158,15 @@ function PlannerSettingInput({
       <FieldLabel>{label}</FieldLabel>
       <Input
         type={type}
+        min={min}
+        max={max}
+        step={step}
+        placeholder={placeholder}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className="min-w-0 bg-background"
       />
+      {children}
     </div>
   );
 }
@@ -1102,6 +1178,7 @@ function EventDialog({
   mode,
   defaultDate,
   defaultTime,
+  defaultDuration = "30m",
   departments,
   onSaved,
 }: {
@@ -1111,6 +1188,7 @@ function EventDialog({
   mode: PlannerDialogMode;
   defaultDate: string | null;
   defaultTime: string;
+  defaultDuration?: string;
   departments: string[];
   onSaved: () => void | Promise<void>;
 }) {
@@ -1121,7 +1199,7 @@ function EventDialog({
     title: "",
     date: "",
     time: "10:00 AM",
-    duration: "30m",
+    duration: defaultDuration,
     status: "Confirmed",
     color: eventColors[0],
     department: "None",
@@ -1143,7 +1221,7 @@ function EventDialog({
           title: event.title ?? "",
           date: event.scheduled_date ?? defaultDate ?? format(new Date(), "yyyy-MM-dd"),
           time: toTimeInput(getEventTime(event.due_time, defaultTime)),
-          duration: extractDescriptionField(event.description, "Duration") ?? "30m",
+          duration: extractDescriptionField(event.description, "Duration") ?? defaultDuration,
           status: extractDescriptionField(event.description, "Status") ?? "Confirmed",
           color: extractColor(event.description),
           department: event.department ?? "None",
@@ -1156,7 +1234,7 @@ function EventDialog({
           title: "",
           date: defaultDate ?? format(new Date(), "yyyy-MM-dd"),
           time: toTimeInput(defaultTime),
-          duration: "30m",
+          duration: defaultDuration,
           status: "Confirmed",
           color: eventColors[0],
           department: "None",
@@ -1166,7 +1244,7 @@ function EventDialog({
         });
       }
     }
-  }, [event, defaultDate, defaultTime, open]);
+  }, [event, defaultDate, defaultTime, defaultDuration, open]);
 
   const submit = async (submitEvent: React.FormEvent<HTMLFormElement>) => {
     submitEvent.preventDefault();
@@ -1402,10 +1480,22 @@ function EventDialog({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="15m">15m</SelectItem>
+                    <SelectItem value="20m">20m</SelectItem>
                     <SelectItem value="30m">30m</SelectItem>
                     <SelectItem value="45m">45m</SelectItem>
                     <SelectItem value="1h">1h</SelectItem>
+                    <SelectItem value="1.5h">1.5h</SelectItem>
                     <SelectItem value="2h">2h</SelectItem>
+                    {Boolean(
+                      defaultDuration &&
+                        !["15m", "20m", "30m", "45m", "1h", "1.5h", "2h"].includes(
+                          defaultDuration,
+                        ),
+                    ) && (
+                      <SelectItem value={defaultDuration}>
+                        {defaultDuration} (Default Slot)
+                      </SelectItem>
+                    )}
                   </SelectContent>
                 </Select>
               </div>
@@ -1588,17 +1678,63 @@ function plannerSettingsFromRow(row: PlannerSettingsRow): PlannerSettings {
   };
 }
 
+function parseSlotMinutes(value: string | number): number {
+  if (typeof value === "number") return Math.max(5, Math.min(240, value));
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return 30;
+
+  if (raw.includes(":")) {
+    const [h = "0", m = "0"] = raw.split(":");
+    const total = Number(h) * 60 + Number(m);
+    if (Number.isFinite(total) && total >= 5 && total <= 240) return total;
+  }
+
+  const hourMatch = raw.match(/^(\d+(?:\.\d+)?)\s*(?:h|hr|hour|hours)$/);
+  if (hourMatch) {
+    const mins = Math.round(Number(hourMatch[1]) * 60);
+    if (mins >= 5 && mins <= 240) return mins;
+  }
+
+  const minMatch = raw.match(/^(\d+)/);
+  if (minMatch) {
+    const mins = Number(minMatch[1]);
+    if (mins >= 5 && mins <= 240) return mins;
+  }
+
+  return 30;
+}
+
+function parseGapMinutes(value: string | number): number {
+  if (typeof value === "number") return Math.max(0, Math.min(120, value));
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw || raw === "0" || raw === "none" || raw === "no") return 0;
+
+  if (raw.includes(":")) {
+    const [h = "0", m = "0"] = raw.split(":");
+    const total = Number(h) * 60 + Number(m);
+    if (Number.isFinite(total) && total >= 0 && total <= 120) return total;
+  }
+
+  const minMatch = raw.match(/^(\d+)/);
+  if (minMatch) {
+    const mins = Number(minMatch[1]);
+    if (mins >= 0 && mins <= 120) return mins;
+  }
+
+  return 0;
+}
+
 function plannerSettingsToRow(userId: string, settings: PlannerSettings) {
   const token = settings.token || createPlannerToken();
-  const parsedSlot = Number(settings.slotMin);
-  const parsedGap = Number(settings.gapMin);
+  const parsedSlot = parseSlotMinutes(settings.slotMin);
+  const parsedGap = parseGapMinutes(settings.gapMin);
   return {
     user_id: userId,
     owner_user_id: userId,
     day_start: settings.dayStart || defaultPlannerSettings.dayStart,
     day_end: settings.dayEnd || defaultPlannerSettings.dayEnd,
-    slot_min: Number.isFinite(parsedSlot) && parsedSlot >= 5 && parsedSlot <= 240 ? parsedSlot : 30,
-    gap_min: Number.isFinite(parsedGap) && parsedGap >= 0 && parsedGap <= 120 ? parsedGap : 0,
+    slot_min: parsedSlot,
+    gap_min: parsedGap,
     lunch_start: settings.lunchStart || defaultPlannerSettings.lunchStart,
     lunch_end: settings.lunchEnd || defaultPlannerSettings.lunchEnd,
     apple_ics_url: settings.appleIcsUrl || "",
@@ -1662,8 +1798,8 @@ function buildPlannerSlots(
   days: Date[] = [],
 ): PlannerSlot[] {
   const slots: PlannerSlot[] = [];
-  const slotMin = Math.max(5, Number(settings.slotMin) || 30);
-  const gapMin = Math.max(0, Number(settings.gapMin) || 0);
+  const slotMin = parseSlotMinutes(settings.slotMin);
+  const gapMin = parseGapMinutes(settings.gapMin);
   const dayKeys = new Set(days.map((day) => format(day, "yyyy-MM-dd")));
   const taskTimes = tasks
     .filter((task) => {
@@ -1672,12 +1808,20 @@ function buildPlannerSlots(
     })
     .map((task) => normalizeTaskTimeMinutes(task.due_time))
     .filter((time): time is number => time !== null);
+
   const configuredStart = minutesFromTime(settings.dayStart);
   const configuredEnd = minutesFromTime(settings.dayEnd);
-  const earliestTask = taskTimes.length ? Math.min(...taskTimes) : configuredStart;
-  const latestTask = taskTimes.length ? Math.max(...taskTimes) + slotMin : configuredEnd;
-  let cursor = Math.max(0, Math.min(configuredStart, roundDownMinutes(earliestTask, slotMin)));
-  const end = Math.min(24 * 60, Math.max(configuredEnd, roundUpMinutes(latestTask, slotMin)));
+
+  // If there are meetings scheduled earlier than configuredStart, start earlier; otherwise start at configuredStart
+  const start = taskTimes.length && Math.min(...taskTimes) < configuredStart
+    ? Math.max(0, roundDownMinutes(Math.min(...taskTimes), slotMin))
+    : configuredStart;
+
+  // If there are meetings scheduled later than configuredEnd, extend end; otherwise end at configuredEnd
+  const latestTaskEnd = taskTimes.length ? Math.max(...taskTimes) + slotMin : configuredEnd;
+  const end = Math.min(24 * 60, Math.max(configuredEnd, roundUpMinutes(latestTaskEnd, slotMin)));
+
+  let cursor = start;
   const lunchStart = minutesFromTime(settings.lunchStart);
   const lunchEnd = minutesFromTime(settings.lunchEnd);
 
@@ -1693,6 +1837,12 @@ function buildPlannerSlots(
     }
 
     if (cursor < lunchStart && cursor + slotMin > lunchStart) {
+      if (lunchStart > cursor) {
+        slots.push({
+          range: `${timeFromMinutes(cursor)} - ${timeFromMinutes(lunchStart)}`,
+          label: null,
+        });
+      }
       cursor = lunchStart;
       continue;
     }
