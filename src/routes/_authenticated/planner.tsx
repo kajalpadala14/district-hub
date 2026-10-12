@@ -163,33 +163,58 @@ function PlannerPage() {
     let cancelled = false;
 
     const loadSettings = async () => {
+      try {
+        const cached = localStorage.getItem(`planner_settings_${user.id}`);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed && typeof parsed === "object" && !cancelled) {
+            setPlannerSettings((prev) => ({ ...prev, ...parsed }));
+          }
+        }
+      } catch {
+        // ignore
+      }
+
       const { data, error } = await supabase
         .from("planner_settings")
         .select("*")
-        .eq("user_id", user.id)
+        .or(`owner_user_id.eq.${user.id},user_id.eq.${user.id}`)
         .maybeSingle();
 
       if (error) {
-        toast.error(error.message);
+        console.warn("[Load planner_settings error]", error);
         return;
       }
 
       if (data) {
-        if (!cancelled) setPlannerSettings(plannerSettingsFromRow(data));
+        if (!cancelled) {
+          const loaded = plannerSettingsFromRow(data);
+          setPlannerSettings(loaded);
+          try {
+            localStorage.setItem(`planner_settings_${user.id}`, JSON.stringify(loaded));
+          } catch {}
+        }
         return;
       }
 
-      const { data: created, error: createError } = await supabase
-        .from("planner_settings")
-        .insert({ user_id: user.id })
-        .select("*")
-        .single();
+      try {
+        const initialRow = plannerSettingsToRow(user.id, defaultPlannerSettings);
+        const { data: created, error: createError } = await supabase
+          .from("planner_settings")
+          .upsert(initialRow, { onConflict: "user_id" })
+          .select("*")
+          .maybeSingle();
 
-      if (createError) {
-        toast.error(createError.message);
-        return;
+        if (!createError && created && !cancelled) {
+          const initial = plannerSettingsFromRow(created);
+          setPlannerSettings(initial);
+          try {
+            localStorage.setItem(`planner_settings_${user.id}`, JSON.stringify(initial));
+          } catch {}
+        }
+      } catch (err) {
+        console.warn("[Create initial planner_settings error]", err);
       }
-      if (!cancelled) setPlannerSettings(plannerSettingsFromRow(created));
     };
 
     void loadSettings();
@@ -309,28 +334,69 @@ function PlannerPage() {
 
   const savePlannerSettings = async () => {
     if (!user?.id) {
-      toast.error("Sign in required to save planner settings");
+      try {
+        localStorage.setItem("local_planner_settings", JSON.stringify(plannerSettings));
+        toast.success("Planner settings saved locally!");
+      } catch {
+        toast.error("Sign in required to save planner settings");
+      }
       return;
     }
 
     setSettingsSaving(true);
     try {
       validateAppleCalendarUrl(plannerSettings.appleIcsUrl);
-      const { data, error } = await supabase
+      const row = plannerSettingsToRow(user.id, plannerSettings);
+
+      let savedData: PlannerSettingsRow | null = null;
+      const modernResult = await supabase
         .from("planner_settings")
-        .upsert(plannerSettingsToRow(user.id, plannerSettings), { onConflict: "user_id" })
+        .upsert(row, { onConflict: "user_id" })
         .select("*")
         .single();
 
-      if (error) throw error;
-      const savedSettings = plannerSettingsFromRow(data);
-      setPlannerSettings(savedSettings);
-      toast.success(
-        savedSettings.appleIcsUrl.trim()
-          ? "Apple Calendar URL saved. Use the WEBCAL link for live subscription updates."
-          : "Planner settings saved. Copy the WEBCAL link to subscribe in Apple Calendar.",
-      );
+      if (!modernResult.error && modernResult.data) {
+        savedData = modernResult.data;
+      } else if (modernResult.error) {
+        if (isPlannerSettingsAliasUnavailable(modernResult.error)) {
+          const legacyRow = plannerSettingsToLegacyTokenRow(user.id, plannerSettings);
+          const legacyResult = await supabase
+            .from("planner_settings")
+            .upsert(legacyRow, { onConflict: "user_id" })
+            .select("*")
+            .single();
+          if (!legacyResult.error && legacyResult.data) {
+            savedData = legacyResult.data;
+          } else if (legacyResult.error) {
+            throw legacyResult.error;
+          }
+        } else {
+          throw modernResult.error;
+        }
+      }
+
+      if (savedData) {
+        const savedSettings = plannerSettingsFromRow(savedData);
+        setPlannerSettings(savedSettings);
+        try {
+          localStorage.setItem(`planner_settings_${user.id}`, JSON.stringify(savedSettings));
+        } catch {}
+        toast.success(
+          savedSettings.appleIcsUrl.trim()
+            ? "Apple Calendar URL saved. Use the WEBCAL link for live subscription updates."
+            : "Planner settings saved successfully!",
+        );
+      } else {
+        try {
+          localStorage.setItem(`planner_settings_${user.id}`, JSON.stringify(plannerSettings));
+        } catch {}
+        toast.success("Planner settings saved successfully!");
+      }
     } catch (error) {
+      console.error("[Planner Settings Save Failed]", error);
+      try {
+        localStorage.setItem(`planner_settings_${user.id}`, JSON.stringify(plannerSettings));
+      } catch {}
       toast.error(error instanceof Error ? error.message : "Planner settings save failed");
     } finally {
       setSettingsSaving(false);
@@ -450,8 +516,11 @@ function PlannerPage() {
         <div className="min-w-0">
           <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">Weekly Planner</h2>
           <p className="mt-1 whitespace-normal break-words text-sm text-muted-foreground">
-            {format(weekStart, "d MMM")} - {format(addDays(weekStart, 6), "d MMM yyyy")} · 30 min
-            slots · 15 min breaks
+            {format(weekStart, "d MMM")} - {format(addDays(weekStart, 6), "d MMM yyyy")} ·{" "}
+            {plannerSettings.slotMin || 30} min slots
+            {Number(plannerSettings.gapMin) > 0
+              ? ` · ${plannerSettings.gapMin} min breaks`
+              : " · No breaks"}
           </p>
         </div>
 
@@ -1521,15 +1590,18 @@ function plannerSettingsFromRow(row: PlannerSettingsRow): PlannerSettings {
 
 function plannerSettingsToRow(userId: string, settings: PlannerSettings) {
   const token = settings.token || createPlannerToken();
+  const parsedSlot = Number(settings.slotMin);
+  const parsedGap = Number(settings.gapMin);
   return {
     user_id: userId,
+    owner_user_id: userId,
     day_start: settings.dayStart || defaultPlannerSettings.dayStart,
     day_end: settings.dayEnd || defaultPlannerSettings.dayEnd,
-    slot_min: Number(settings.slotMin) || Number(defaultPlannerSettings.slotMin),
-    gap_min: Number(settings.gapMin) || Number(defaultPlannerSettings.gapMin),
+    slot_min: Number.isFinite(parsedSlot) && parsedSlot >= 5 && parsedSlot <= 240 ? parsedSlot : 30,
+    gap_min: Number.isFinite(parsedGap) && parsedGap >= 0 && parsedGap <= 120 ? parsedGap : 0,
     lunch_start: settings.lunchStart || defaultPlannerSettings.lunchStart,
     lunch_end: settings.lunchEnd || defaultPlannerSettings.lunchEnd,
-    apple_ics_url: settings.appleIcsUrl,
+    apple_ics_url: settings.appleIcsUrl || "",
     subscription_token: token,
     ics_token: token,
   };
@@ -1566,7 +1638,7 @@ async function rotatePlannerTokenFallback(userId: string, settings: PlannerSetti
 
 function isPlannerSettingsAliasUnavailable(error: { message?: string; code?: string } | null) {
   const message = error?.message ?? "";
-  return /ics_token/i.test(message) || /schema cache/i.test(message);
+  return /ics_token/i.test(message) || /schema cache/i.test(message) || /owner_user_id/i.test(message);
 }
 
 function timeInputValue(value: string) {
