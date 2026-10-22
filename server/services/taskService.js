@@ -147,6 +147,30 @@ export async function addComment(user, id, comment) {
   return data;
 }
 
+export async function updateComment(user, id, commentId, comment) {
+  await getTaskOrThrow(user, id);
+  const { data, error } = await supabaseAdmin
+    .from("task_comments")
+    .update({ comment })
+    .eq("id", commentId)
+    .eq("task_id", id)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteComment(user, id, commentId) {
+  await getTaskOrThrow(user, id);
+  const { error } = await supabaseAdmin
+    .from("task_comments")
+    .delete()
+    .eq("id", commentId)
+    .eq("task_id", id);
+  if (error) throw error;
+  return true;
+}
+
 export async function addAttachment(user, id, attachment) {
   await getTaskOrThrow(user, id);
   const { data, error } = await supabaseAdmin

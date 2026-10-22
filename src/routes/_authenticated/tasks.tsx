@@ -177,17 +177,28 @@ function TasksManagementPage() {
   };
 
   const decoratedTasks = useMemo(() => {
-    return taskItems.map((task) => ({
-      task,
-      agency: agencyFor(task),
-      assignee: nameFor(task.assignee_id),
-      assigneeList: [nameFor(task.assignee_id), ...additionalAssigneesFor(task.description)],
-      assigneeProfile: profileFor(task.assignee_id),
-      assignedBy: nameFor(task.created_by),
-      displayStatus: displayStatusFor(task),
-      comments: commentsFor(task, taskComments[task.id]),
-      latestComment: taskComments[task.id]?.[0]?.comment ?? "",
-    }));
+    return taskItems.map((task) => {
+      const taskCommentList = taskComments[task.id];
+      const latestCommentObj = taskCommentList?.[0];
+      const fallbackNote = extractFollowUpNote(task.description);
+      const cleanedDesc = cleanTaskDescription(task.description);
+      const fallbackMessage = fallbackNote || cleanedDesc || task.title || "";
+      const latestComment = latestCommentObj?.comment ?? fallbackMessage;
+      const latestCommentId = latestCommentObj?.id ?? null;
+
+      return {
+        task,
+        agency: agencyFor(task),
+        assignee: nameFor(task.assignee_id),
+        assigneeList: [nameFor(task.assignee_id), ...additionalAssigneesFor(task.description)],
+        assigneeProfile: profileFor(task.assignee_id),
+        assignedBy: nameFor(task.created_by),
+        displayStatus: displayStatusFor(task),
+        comments: latestComment || commentsFor(task, taskCommentList),
+        latestComment,
+        latestCommentId,
+      };
+    });
   }, [taskItems, profiles, taskComments]);
 
   const filtered = useMemo(() => {
@@ -199,8 +210,9 @@ function TasksManagementPage() {
         if (statusFilter !== "all" && displayStatus !== statusFilter) return false;
         if (agencyFilter !== "all" && agency !== agencyFilter) return false;
         if (departmentFilter !== "all" && task.department !== departmentFilter) return false;
-        if (commentsFilter === "with-comments" && comments === "No comments") return false;
-        if (commentsFilter === "without-comments" && comments !== "No comments") return false;
+        const hasActualComment = Boolean(taskComments[task.id]?.length) || Boolean(extractFollowUpNote(task.description));
+        if (commentsFilter === "with-comments" && !hasActualComment) return false;
+        if (commentsFilter === "without-comments" && hasActualComment) return false;
         if (!q) return true;
         return [
           String(task.id ?? "").slice(0, 8),
@@ -481,7 +493,7 @@ function TasksManagementPage() {
     toast.success("Task pinned for follow-up");
   };
 
-  const handleSaveComment = async (task: Task, comment: string) => {
+  const handleSaveComment = async (task: Task, comment: string, commentId?: string | null) => {
     const trimmed = comment.trim();
     if (!trimmed) {
       toast.error("Enter a follow-up comment first");
@@ -494,17 +506,158 @@ function TasksManagementPage() {
 
     setSavingCommentId(task.id);
     try {
-      const { error } = await supabase.from("task_comments").insert({
-        task_id: task.id,
-        comment: trimmed,
-        commented_by: currentUserId,
-      });
-      if (error) throw error;
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
+
+      if (commentId) {
+        let updated = false;
+        if (accessToken) {
+          try {
+            const res = await fetch(`/api/tasks/${task.id}/comments/${commentId}`, {
+              method: "PUT",
+              headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}` },
+              body: JSON.stringify({ comment: trimmed }),
+            });
+            if (res.ok) updated = true;
+          } catch {}
+        }
+        if (!updated) {
+          const { error } = await supabase
+            .from("task_comments")
+            .update({
+              comment: trimmed,
+            })
+            .eq("id", commentId);
+          if (error) throw error;
+        }
+        toast.success("Follow-up comment updated");
+      } else {
+        const existingList = taskComments[task.id];
+        if (existingList && existingList.length > 0) {
+          const targetId = existingList[0].id;
+          let updated = false;
+          if (accessToken) {
+            try {
+              const res = await fetch(`/api/tasks/${task.id}/comments/${targetId}`, {
+                method: "PUT",
+                headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}` },
+                body: JSON.stringify({ comment: trimmed }),
+              });
+              if (res.ok) updated = true;
+            } catch {}
+          }
+          if (!updated) {
+            const { error } = await supabase
+              .from("task_comments")
+              .update({
+                comment: trimmed,
+              })
+              .eq("id", targetId);
+            if (error) throw error;
+          }
+          toast.success("Follow-up comment updated");
+        } else {
+          let created = false;
+          if (accessToken) {
+            try {
+              const res = await fetch(`/api/tasks/${task.id}/comments`, {
+                method: "POST",
+                headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}` },
+                body: JSON.stringify({ comment: trimmed }),
+              });
+              if (res.ok) created = true;
+            } catch {}
+          }
+          if (!created) {
+            const { error } = await supabase.from("task_comments").insert({
+              task_id: task.id,
+              comment: trimmed,
+              commented_by: currentUserId,
+            });
+            if (error) throw error;
+          }
+          toast.success("Follow-up comment saved");
+        }
+      }
+
+      // Also clean up any legacy note from task.description if it existed so it doesn't get out of sync
+      if (task.description && /(?:Steno\s*\/\s*Follow-up Note|Follow-up Note|Steno Note|Follow-up):\s*/i.test(task.description)) {
+        const cleanedDescription = task.description
+          .split("\n")
+          .filter((line) => !line.match(/^(?:Steno\s*\/\s*Follow-up Note|Follow-up Note|Steno Note|Follow-up):\s*.+$/i))
+          .join("\n")
+          .trim();
+        await supabase
+          .from("tasks")
+          .update({ description: cleanedDescription })
+          .eq("id", task.id);
+      }
+
       await loadTaskComments();
       await refreshTasks();
-      toast.success("Comment saved");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Comment save failed");
+    } finally {
+      setSavingCommentId(null);
+    }
+  };
+
+  const handleDeleteComment = async (task: Task, commentId?: string | null) => {
+    if (!currentUserId) {
+      toast.error("Please sign in before deleting comments.");
+      return;
+    }
+
+    setSavingCommentId(task.id);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
+      const targetId = commentId || taskComments[task.id]?.[0]?.id;
+
+      if (targetId) {
+        let deleted = false;
+        if (accessToken) {
+          try {
+            const res = await fetch(`/api/tasks/${task.id}/comments/${targetId}`, {
+              method: "DELETE",
+              headers: { authorization: `Bearer ${accessToken}` },
+            });
+            if (res.ok) deleted = true;
+          } catch {}
+        }
+        if (!deleted) {
+          const { error } = await supabase.from("task_comments").delete().eq("id", targetId);
+          if (error) throw error;
+        }
+      } else {
+        // If there was no separate task_comments row, clear the message from task description while preserving metadata
+        const metadataLines = (task.description || "")
+          .split("\n")
+          .filter((line) => /^(?:Other Agency|Agency|Additional Assignees|Second Assignee):\s*/i.test(line.trim()));
+        await supabase
+          .from("tasks")
+          .update({ description: metadataLines.join("\n").trim() })
+          .eq("id", task.id);
+      }
+
+      // Also clean up legacy note from task.description if it existed
+      if (task.description && /(?:Steno\s*\/\s*Follow-up Note|Follow-up Note|Steno Note|Follow-up):\s*/i.test(task.description)) {
+        const cleanedDescription = task.description
+          .split("\n")
+          .filter((line) => !line.match(/^(?:Steno\s*\/\s*Follow-up Note|Follow-up Note|Steno Note|Follow-up):\s*.+$/i))
+          .join("\n")
+          .trim();
+        await supabase
+          .from("tasks")
+          .update({ description: cleanedDescription })
+          .eq("id", task.id);
+      }
+
+      await loadTaskComments();
+      await refreshTasks();
+      toast.success("Follow-up comment deleted");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Comment delete failed");
     } finally {
       setSavingCommentId(null);
     }
@@ -732,6 +885,7 @@ function TasksManagementPage() {
                 selected={selectedIds.includes(item.task.id)}
                 onToggleSelected={toggleTaskSelection}
                 onSaveComment={handleSaveComment}
+                onDeleteComment={handleDeleteComment}
                 savingComment={savingCommentId === item.task.id}
                 onEdit={(task) => { setEditing(task); setDialogOpen(true); }}
                 onScheduleMeeting={handleScheduleMeeting}
@@ -789,7 +943,7 @@ function TasksManagementPage() {
                     </TableCell>
                   </TableRow>
                 )}
-                {filtered.map(({ task, assignee, assigneeList, assigneeProfile, assignedBy, agency, comments, latestComment, displayStatus }, index) => (
+                {filtered.map(({ task, assignee, assigneeList, assigneeProfile, assignedBy, agency, comments, latestComment, latestCommentId, displayStatus }, index) => (
                   <TableRow key={task.id} className="bg-card/70">
                     {bulkMode && (
                       <TableCell>
@@ -832,8 +986,10 @@ function TasksManagementPage() {
                         task={task}
                         comments={comments}
                         latestComment={latestComment}
+                        latestCommentId={latestCommentId}
                         saving={savingCommentId === task.id}
                         onSave={handleSaveComment}
+                        onDelete={handleDeleteComment}
                       />
                     </TableCell>
                     <TableCell className="whitespace-normal break-words align-top text-sm [overflow-wrap:anywhere]">
@@ -1048,6 +1204,7 @@ type TaskListItem = {
   displayStatus: "pending" | "in_progress" | "completed" | "overdue";
   comments: string;
   latestComment: string;
+  latestCommentId?: string | null;
 };
 
 type TaskActionHandlers = {
@@ -1062,7 +1219,8 @@ type TaskActionHandlers = {
 };
 
 type TaskCommentAction = {
-  onSaveComment: (task: Task, comment: string) => void | Promise<void>;
+  onSaveComment: (task: Task, comment: string, commentId?: string | null) => void | Promise<void>;
+  onDeleteComment?: (task: Task, commentId?: string | null) => void | Promise<void>;
   savingComment?: boolean;
 };
 
@@ -1081,6 +1239,7 @@ function TaskMobileCard({
   onPin,
   onDelete,
   onSaveComment,
+  onDeleteComment,
   savingComment = false,
 }: {
   index: number;
@@ -1144,8 +1303,10 @@ function TaskMobileCard({
               task={task}
               comments={comments}
               latestComment={latestComment}
+              latestCommentId={item.latestCommentId}
               saving={savingComment}
               onSave={onSaveComment}
+              onDelete={onDeleteComment}
             />
           </div>
         </div>
@@ -1174,68 +1335,123 @@ function TaskCommentComposer({
   task,
   comments,
   latestComment,
+  latestCommentId,
   saving,
   onSave,
+  onDelete,
 }: {
   task: Task;
   comments: string;
   latestComment: string;
+  latestCommentId?: string | null;
   saving: boolean;
-  onSave: (task: Task, comment: string) => void | Promise<void>;
+  onSave: (task: Task, comment: string, commentId?: string | null) => void | Promise<void>;
+  onDelete?: (task: Task, commentId?: string | null) => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState("");
-  const preview = latestComment || comments;
+  const fallbackMessage = cleanTaskDescription(task.description) || task.title || "";
+  const existingMessage = latestComment || fallbackMessage;
+  const [draft, setDraft] = useState(existingMessage);
+  const preview = latestComment || comments || existingMessage;
+
+  useEffect(() => {
+    if (open) {
+      setDraft(latestComment || fallbackMessage);
+    }
+  }, [open, latestComment, fallbackMessage]);
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (nextOpen) {
+      setDraft(latestComment || fallbackMessage);
+    }
+  };
 
   const handleCancel = () => {
-    setDraft("");
+    setDraft(latestComment || fallbackMessage);
     setOpen(false);
   };
 
   const handleSave = async () => {
-    await onSave(task, draft);
-    setDraft("");
+    await onSave(task, draft, latestCommentId);
     setOpen(false);
   };
 
+  const handleDelete = async () => {
+    if (onDelete) {
+      await onDelete(task, latestCommentId);
+      setDraft("");
+      setOpen(false);
+    }
+  };
+
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
           className="group flex w-full min-w-0 items-start gap-2 rounded-md border border-transparent px-2 py-1.5 text-left text-sm transition hover:border-primary/25 hover:bg-primary/5"
-          aria-label={`Add comment for ${task.title}`}
+          aria-label={`Add or edit comment for ${task.title}`}
         >
           <MessageSquareText className="mt-0.5 h-4 w-4 shrink-0 text-primary/75" aria-hidden="true" />
           <span className="min-w-0 flex-1">
-            <span className={cn("block whitespace-normal break-words leading-relaxed [overflow-wrap:anywhere]", latestComment ? "text-foreground" : "text-muted-foreground")}>
+            <span
+              className={cn(
+                "block whitespace-normal break-words leading-relaxed [overflow-wrap:anywhere]",
+                latestComment ? "text-foreground" : "text-muted-foreground",
+              )}
+            >
               {preview}
             </span>
             <span className="mt-1 block text-[11px] font-semibold uppercase tracking-wide text-primary opacity-0 transition group-hover:opacity-100">
-              Follow-up
+              {latestComment ? "Edit Follow-up" : "Follow-up"}
             </span>
           </span>
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[min(20rem,calc(100vw-2rem))] rounded-lg p-3 shadow-lg">
+      <PopoverContent align="start" className="w-[min(22rem,calc(100vw-2rem))] rounded-lg p-3 shadow-lg">
         <div className="space-y-3">
-          <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
-            Steno / Follow-up Comment
-          </p>
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+              Steno / Follow-up Comment
+            </p>
+            {existingMessage && (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                Edit / Delete
+              </span>
+            )}
+          </div>
           <Textarea
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder="currently portal itself is not allowing for musterrolle to be generated..."
+            placeholder="Write follow-up comment..."
             className="min-h-28 resize-none text-sm leading-relaxed"
             autoFocus
           />
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" size="sm" onClick={handleCancel} disabled={saving}>
-              Cancel
-            </Button>
-            <Button type="button" size="sm" onClick={handleSave} disabled={saving || !draft.trim()}>
-              {saving ? "Saving..." : "Save"}
-            </Button>
+          <div className="flex items-center justify-between gap-2 pt-1">
+            {onDelete ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={handleDelete}
+                disabled={saving}
+                className="h-8 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+              >
+                <Trash2 className="mr-1 h-3.5 w-3.5" />
+                Delete
+              </Button>
+            ) : (
+              <div />
+            )}
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={handleCancel} disabled={saving}>
+                Cancel
+              </Button>
+              <Button type="button" size="sm" onClick={handleSave} disabled={saving || !draft.trim()}>
+                {saving ? "Saving..." : "Save"}
+              </Button>
+            </div>
           </div>
         </div>
       </PopoverContent>
@@ -1723,7 +1939,37 @@ function timeForSort(value: string | null | undefined, fallback: number) {
   return date ? date.getTime() : fallback;
 }
 
-function commentsFor(task: Task) {
+function cleanTaskDescription(description?: string | null): string {
+  if (!description) return "";
+  const lines = description
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => {
+      if (!l) return false;
+      if (/^(?:Other Agency|Agency):\s*/i.test(l)) return false;
+      if (/^(?:Additional Assignees|Second Assignee):\s*/i.test(l)) return false;
+      if (/^(?:Steno\s*\/\s*Follow-up Note|Follow-up Note|Steno Note|Follow-up):\s*/i.test(l)) return false;
+      if (/^Remarks:\s*/i.test(l)) return false;
+      return true;
+    });
+  return lines.join("\n").trim();
+}
+
+function extractFollowUpNote(description?: string | null): string {
+  if (!description) return "";
+  const match = description.match(/(?:Steno\s*\/\s*Follow-up Note|Follow-up Note|Steno Note|Follow-up):\s*([^\n]+)/i);
+  return match ? match[1].trim() : "";
+}
+
+function commentsFor(task: Task, taskCommentList?: TaskComment[]) {
+  if (taskCommentList && taskCommentList.length > 0) {
+    return taskCommentList[0].comment;
+  }
+  const note = extractFollowUpNote(task.description);
+  if (note) return note;
+  const cleanedDesc = cleanTaskDescription(task.description);
+  if (cleanedDesc) return cleanedDesc;
+  if (task.title) return task.title;
   if (task.status === "blocked") return "Needs review";
   if (task.priority === "urgent") return "Marked important";
   if (task.completed_at) return "Completion updated";

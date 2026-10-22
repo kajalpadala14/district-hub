@@ -4,6 +4,8 @@ import { asyncHandler, ApiError } from "../utils/http.js";
 import {
   addAttachment,
   addComment,
+  updateComment,
+  deleteComment,
   bulkEdit,
   createTask,
   deleteTask,
@@ -121,6 +123,26 @@ taskRouter.post(
     const comment = await addComment(req.user, req.params.id, parsed.data.comment);
     await audit(req, "task_comment_added", req.params.id);
     res.status(201).json({ comment });
+  }),
+);
+
+taskRouter.put(
+  "/:id/comments/:commentId",
+  asyncHandler(async (req, res) => {
+    const parsed = commentSchema.safeParse(req.body);
+    if (!parsed.success) throw new ApiError(400, "Invalid comment payload", parsed.error.flatten());
+    const comment = await updateComment(req.user, req.params.id, req.params.commentId, parsed.data.comment);
+    await audit(req, "task_comment_updated", req.params.id, { comment_id: req.params.commentId });
+    res.json({ comment });
+  }),
+);
+
+taskRouter.delete(
+  "/:id/comments/:commentId",
+  asyncHandler(async (req, res) => {
+    await deleteComment(req.user, req.params.id, req.params.commentId);
+    await audit(req, "task_comment_deleted", req.params.id, { comment_id: req.params.commentId });
+    res.status(204).send();
   }),
 );
 

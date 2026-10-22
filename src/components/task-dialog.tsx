@@ -177,7 +177,7 @@ export function TaskDialog({
       setForm({
         title: task.title,
         description: parsedDescription.description,
-        agency: "",
+        agency: task.agency || parsedDescription.agency || "",
         priority: task.priority,
         status: task.status,
         assignee_id: task.assignee_id,
@@ -186,11 +186,29 @@ export function TaskDialog({
         due_date: task.due_date,
         scheduled_date: task.scheduled_date,
         department: task.department,
-        steno_note: "",
-        remarks: "",
+        steno_note: parsedDescription.stenoNote || "",
+        remarks: parsedDescription.remarks || "",
         mark_today: false,
         calendar_sync_enabled: task.calendar_sync_enabled,
       });
+
+      if (!parsedDescription.stenoNote && task.id) {
+        supabase
+          .from("task_comments")
+          .select("comment")
+          .eq("task_id", task.id)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .then(({ data }) => {
+            if (data && data.length > 0 && data[0].comment) {
+              setForm((prev) => ({
+                ...prev,
+                steno_note: prev.steno_note || data[0].comment,
+              }));
+            }
+          });
+      }
+
       setShowAdvanced(true);
     } else {
       setForm({
@@ -278,6 +296,33 @@ export function TaskDialog({
           parsed.data.calendar_sync_enabled,
           task.calendar_sync_enabled,
         );
+
+        const note = form.steno_note.trim();
+        if (note) {
+          const { data: existingComments } = await supabase
+            .from("task_comments")
+            .select("id")
+            .eq("task_id", data.id)
+            .order("created_at", { ascending: false })
+            .limit(1);
+
+          if (existingComments && existingComments.length > 0) {
+            await supabase
+              .from("task_comments")
+              .update({ comment: note })
+              .eq("id", existingComments[0].id);
+          } else {
+            await supabase.from("task_comments").insert({
+              task_id: data.id,
+              comment: note,
+              commented_by: userId,
+            });
+          }
+        } else {
+          // Follow-up note was cleared/deleted
+          await supabase.from("task_comments").delete().eq("task_id", data.id);
+        }
+
         await onSaved?.();
         toast.success("Task updated");
       } else {
@@ -288,6 +333,16 @@ export function TaskDialog({
           calendar_sync_enabled: parsed.data.calendar_sync_enabled,
         });
         await syncCalendarAfterSave(data.id, parsed.data.calendar_sync_enabled, false);
+
+        const note = form.steno_note.trim();
+        if (note) {
+          await supabase.from("task_comments").insert({
+            task_id: data.id,
+            comment: note,
+            commented_by: userId,
+          });
+        }
+
         await onSaved?.();
         toast.success("Task created");
       }
@@ -868,18 +923,44 @@ function parseDescriptionMetadata(description: string, employees: Profile[]) {
     employees.map((employee) => [employeeLabel(employee).trim().toLowerCase(), employee.id]),
   );
   const additionalAssigneeIds: string[] = [];
+  let agency = "";
+  let stenoNote = "";
+  let remarks = "";
+
   const lines = description.split("\n").filter((line) => {
-    const match = line.match(/^(Additional Assignees|Second Assignee):\s*(.+)$/i);
-    if (!match) return true;
-    const names = match[2].split(",").map((name) => name.trim()).filter(Boolean);
-    const ids = names.map((name) => employeeByName.get(name.toLowerCase()));
-    if (ids.some((id) => !id)) return true;
-    additionalAssigneeIds.push(...(ids as string[]));
-    return false;
+    const trimmed = line.trim();
+    const assigneeMatch = trimmed.match(/^(Additional Assignees|Second Assignee):\s*(.+)$/i);
+    if (assigneeMatch) {
+      const names = assigneeMatch[2].split(",").map((name) => name.trim()).filter(Boolean);
+      const ids = names.map((name) => employeeByName.get(name.toLowerCase()));
+      if (ids.some((id) => !id)) return true;
+      additionalAssigneeIds.push(...(ids as string[]));
+      return false;
+    }
+    const noteMatch = trimmed.match(/^(?:Steno\s*\/\s*Follow-up Note|Follow-up Note|Steno Note|Follow-up):\s*(.+)$/i);
+    if (noteMatch) {
+      stenoNote = noteMatch[1].trim();
+      return false;
+    }
+    const remarksMatch = trimmed.match(/^Remarks:\s*(.+)$/i);
+    if (remarksMatch) {
+      remarks = remarksMatch[1].trim();
+      return false;
+    }
+    const agencyMatch = trimmed.match(/^(?:Other Agency|Agency):\s*(.+)$/i);
+    if (agencyMatch) {
+      agency = agencyMatch[1].trim();
+      return false;
+    }
+    return true;
   });
+
   return {
     description: lines.join("\n").trim(),
     additionalAssigneeIds,
+    stenoNote,
+    remarks,
+    agency,
   };
 }
 
